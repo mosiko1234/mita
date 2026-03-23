@@ -57,6 +57,8 @@ func DetectUSBDrives() ([]USBDrive, error) {
 		if err != nil || drive == nil || drive.Path == "" {
 			continue
 		}
+		// Check if actually writable
+		drive.ReadOnly = !checkWritable(drive.Path)
 		drives = append(drives, *drive)
 	}
 

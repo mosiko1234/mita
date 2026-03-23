@@ -149,18 +149,43 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 		return "", fmt.Errorf("generate checksums: %w", err)
 	}
 
-	// Step 10: Create ZIP on USB
+	// Step 10: Create ZIP — try USB first, fallback to Desktop if read-only
 	timestamp := time.Now().Format("20060102-150405")
 	zipName := fmt.Sprintf("%s-%s.mita.zip", sanitizeName(projectName), timestamp)
 	zipPath := filepath.Join(usbPath, zipName)
 
-	report(fmt.Sprintf("Writing bundle to USB: %s", zipName))
+	// Check if USB is writable before attempting
+	if !isWritable(usbPath) {
+		// Fallback: write to ~/Desktop and let user copy manually
+		home, _ := os.UserHomeDir()
+		fallbackDir := filepath.Join(home, "Desktop")
+		if _, err := os.Stat(fallbackDir); os.IsNotExist(err) {
+			fallbackDir = home
+		}
+		zipPath = filepath.Join(fallbackDir, zipName)
+		report(fmt.Sprintf("USB is read-only (NTFS on macOS?). Saving to: %s", fallbackDir))
+	} else {
+		report(fmt.Sprintf("Writing bundle to USB: %s", zipName))
+	}
+
 	if err := createZip(stageDir, zipPath); err != nil {
 		return "", fmt.Errorf("create zip: %w", err)
 	}
 
 	report("Export complete!")
 	return zipPath, nil
+}
+
+// isWritable tests whether a path is writable by creating and removing a temp file.
+func isWritable(dir string) bool {
+	testPath := filepath.Join(dir, ".mita-write-test")
+	f, err := os.Create(testPath)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	os.Remove(testPath)
+	return true
 }
 
 func getHeadCommit(repoDir string) string {
