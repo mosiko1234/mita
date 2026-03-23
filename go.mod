@@ -7,7 +7,6 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/xanzy/go-gitlab v0.115.0
-	howett.net/plist v1.0.1
 )
 
 require (
