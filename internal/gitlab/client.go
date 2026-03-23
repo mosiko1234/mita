@@ -14,6 +14,7 @@ type Client struct {
 	gl          *gogitlab.Client
 	baseURL     string
 	insecureTLS bool
+	token       string
 	username    string
 	password    string
 }
@@ -67,6 +68,7 @@ func NewClient(baseURL, token string, insecureTLS bool) (*Client, error) {
 		gl:          gl,
 		baseURL:     baseURL,
 		insecureTLS: insecureTLS,
+		token:       token,
 	}, nil
 }
 
@@ -184,6 +186,11 @@ func (c *Client) GetProject(projectID int) (*Project, error) {
 		HTTPURL:       p.HTTPURLToRepo,
 		SSHURL:        p.SSHURLToRepo,
 	}, nil
+}
+
+// Token returns the configured private token.
+func (c *Client) Token() string {
+	return c.token
 }
 
 // BaseURL returns the configured GitLab base URL.

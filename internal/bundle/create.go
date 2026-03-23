@@ -40,7 +40,13 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 		return "", fmt.Errorf("project %q not found", projectName)
 	}
 
+	// Build clone URL with embedded credentials so git doesn't prompt interactively
 	cloneURL := project.HTTPURL
+	if client.Username() != "" && client.Password() != "" {
+		cloneURL = gitlab.EmbedCredentialsInURL(cloneURL, client.Username(), client.Password())
+	} else if client.Token() != "" {
+		cloneURL = gitlab.EmbedTokenInURL(cloneURL, client.Token())
+	}
 	cloneDir := filepath.Join(tmpDir, "clone")
 	bareDir := filepath.Join(tmpDir, "bare")
 	stageDir := filepath.Join(tmpDir, "stage")

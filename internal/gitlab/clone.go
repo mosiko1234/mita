@@ -30,15 +30,18 @@ func Clone(opts CloneOptions) error {
 	args = append(args, opts.URL, opts.Destination)
 
 	cmd := exec.Command("git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
+	// Build environment: disable interactive prompts + optional insecure TLS
+	env := os.Environ()
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
 	if opts.InsecureTLS {
-		cmd.Env = append(os.Environ(), "GIT_SSL_NO_VERIFY=true")
+		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
+	cmd.Env = env
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git clone: %w\n%s", err, string(out))
 	}
 
 	return nil
@@ -48,15 +51,17 @@ func Clone(opts CloneOptions) error {
 func FetchLFS(repoDir string, insecureTLS bool) error {
 	cmd := exec.Command("git", "lfs", "fetch", "--all")
 	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
+	env := os.Environ()
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
 	if insecureTLS {
-		cmd.Env = append(os.Environ(), "GIT_SSL_NO_VERIFY=true")
+		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
+	cmd.Env = env
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git lfs fetch: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git lfs fetch: %w\n%s", err, string(out))
 	}
 
 	return nil
@@ -65,15 +70,13 @@ func FetchLFS(repoDir string, insecureTLS bool) error {
 // CreateBareRepo initializes a bare repository and pushes all refs to it.
 func CreateBareRepo(sourceDir, bareDir string) error {
 	// Init bare repo
-	cmd := exec.Command("git", "init", "--bare", bareDir)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git init --bare: %w", err)
+	out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git init --bare: %w\n%s", err, string(out))
 	}
 
 	// Add bare repo as remote and push all
-	cmd = exec.Command("git", "remote", "add", "bare", bareDir)
+	cmd := exec.Command("git", "remote", "add", "bare", bareDir)
 	cmd.Dir = sourceDir
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git remote add bare: %w", err)
@@ -81,18 +84,14 @@ func CreateBareRepo(sourceDir, bareDir string) error {
 
 	cmd = exec.Command("git", "push", "bare", "--all")
 	cmd.Dir = sourceDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git push --all to bare: %w", err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git push --all to bare: %w\n%s", err, string(out))
 	}
 
 	cmd = exec.Command("git", "push", "bare", "--tags")
 	cmd.Dir = sourceDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git push --tags to bare: %w", err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git push --tags to bare: %w\n%s", err, string(out))
 	}
 
 	return nil
@@ -102,11 +101,10 @@ func CreateBareRepo(sourceDir, bareDir string) error {
 func CreateGitBundle(bareDir, bundlePath string) error {
 	cmd := exec.Command("git", "bundle", "create", bundlePath, "--all")
 	cmd.Dir = bareDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git bundle create: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git bundle create: %w\n%s", err, string(out))
 	}
 
 	return nil
@@ -116,8 +114,6 @@ func CreateGitBundle(bareDir, bundlePath string) error {
 func PushLFSToBare(sourceDir, bareDir string) error {
 	cmd := exec.Command("git", "lfs", "push", "--all", bareDir)
 	cmd.Dir = sourceDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
 		// LFS push might fail if no LFS objects, that's OK

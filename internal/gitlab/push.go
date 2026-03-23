@@ -92,3 +92,28 @@ func BuildRemoteURL(baseURL, group, project, username, password string) string {
 	}
 	return fmt.Sprintf("https://%s/%s", host, path)
 }
+
+// EmbedCredentialsInURL takes a GitLab HTTP URL and injects username:password.
+// e.g., https://gitlab.local/group/repo.git -> https://user:pass@gitlab.local/group/repo.git
+func EmbedCredentialsInURL(rawURL, username, password string) string {
+	if username == "" || password == "" {
+		return rawURL
+	}
+
+	for _, prefix := range []string{"https://", "http://"} {
+		if len(rawURL) > len(prefix) && rawURL[:len(prefix)] == prefix {
+			return prefix + username + ":" + password + "@" + rawURL[len(prefix):]
+		}
+	}
+
+	return rawURL
+}
+
+// EmbedTokenInURL takes a GitLab HTTP URL and injects a private token.
+// GitLab allows cloning with: https://oauth2:<token>@gitlab.local/group/repo.git
+func EmbedTokenInURL(rawURL, token string) string {
+	if token == "" {
+		return rawURL
+	}
+	return EmbedCredentialsInURL(rawURL, "oauth2", token)
+}
