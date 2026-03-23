@@ -66,14 +66,24 @@ func selfInstall() {
 		installPath = "/usr/local/bin/mita"
 	}
 
-	// Already installed at target — skip
+	// Already running from the install path — nothing to do
 	if exe == installPath {
 		return
 	}
 
-	// Already exists at target — skip (use `mita install` to force)
-	if _, err := os.Stat(installPath); err == nil {
-		return
+	// Check if installed version exists and compare modification times
+	installedInfo, err := os.Stat(installPath)
+	if err == nil {
+		// Installed version exists — check if current binary is newer
+		currentInfo, err := os.Stat(exe)
+		if err != nil {
+			return
+		}
+		if !currentInfo.ModTime().After(installedInfo.ModTime()) {
+			return // installed version is same or newer, skip
+		}
+		// Current binary is newer — auto-update
+		fmt.Println("Updating MITA installation...")
 	}
 
 	doInstall(exe, installPath)

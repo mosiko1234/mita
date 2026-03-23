@@ -192,48 +192,76 @@ func cleanMacOSJunk(usbPath string) bool {
 		return false
 	}
 
-	// First, try to prevent macOS from recreating Spotlight/fsevents on this volume
-	// mdutil -d disables Spotlight indexing; mdutil -X removes existing index
+	// Step 1: Disable Spotlight indexing on this volume to prevent re-creation
 	exec.Command("mdutil", "-d", usbPath).Run()
-	exec.Command("mdutil", "-X", usbPath).Run()
+	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Run dot_clean to merge ._ resource fork files into their parent files
+	// Step 2: Create .metadata_never_index to prevent Spotlight from ever indexing
+	noIndexPath := filepath.Join(usbPath, ".metadata_never_index")
+	os.WriteFile(noIndexPath, []byte{}, 0644)
+
+	// Step 3: Run dot_clean to merge ._ resource fork files
 	exec.Command("dot_clean", "-m", usbPath).Run()
 
-	// Directories to remove recursively
+	// Step 4: Build list of all junk to remove
 	junkDirs := []string{
 		".Spotlight-V100",
 		".fseventsd",
 		".Trashes",
 		".TemporaryItems",
 	}
-	for _, name := range junkDirs {
-		path := filepath.Join(usbPath, name)
-		os.RemoveAll(path)
-	}
-
-	// Individual files to remove
 	junkFiles := []string{
 		".DS_Store",
 		".VolumeIcon.icns",
 		".com.apple.timemachine.donotpresent",
 	}
+
+	// Step 5: Try normal removal first
+	var stubborn []string
+	for _, name := range junkDirs {
+		path := filepath.Join(usbPath, name)
+		if _, err := os.Stat(path); err == nil {
+			if os.RemoveAll(path) != nil {
+				stubborn = append(stubborn, path)
+			}
+		}
+	}
 	for _, name := range junkFiles {
 		path := filepath.Join(usbPath, name)
-		os.Remove(path)
+		if _, err := os.Stat(path); err == nil {
+			if os.Remove(path) != nil {
+				stubborn = append(stubborn, path)
+			}
+		}
 	}
 
 	// Remove .DS_Store and ._ resource fork files recursively
 	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip errors (permission denied etc.)
+			return nil
 		}
 		name := info.Name()
 		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
-			os.Remove(path)
+			if os.Remove(path) != nil {
+				stubborn = append(stubborn, path)
+			}
 		}
 		return nil
 	})
+
+	// Step 6: For stubborn files (SIP-protected like .Spotlight-V100),
+	// use osascript to request elevated privileges via a GUI prompt
+	if len(stubborn) > 0 {
+		rmArgs := ""
+		for _, p := range stubborn {
+			rmArgs += fmt.Sprintf(" %q", p)
+		}
+		script := fmt.Sprintf(`do shell script "rm -rf %s" with administrator privileges`, rmArgs)
+		exec.Command("osascript", "-e", script).Run()
+	}
+
+	// Step 7: Remove .metadata_never_index we created — classified-side scanners don't need it
+	os.Remove(noIndexPath)
 
 	return true
 }
