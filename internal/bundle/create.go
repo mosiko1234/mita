@@ -274,7 +274,7 @@ func cleanMacOSJunk(usbPath string) bool {
 }
 
 // CleanAndEject performs a thorough cleanup of macOS hidden files then ejects the USB.
-// The key insight: we clean, then IMMEDIATELY eject before macOS can recreate anything.
+// The cleanup and eject happen as fast as possible so macOS can't recreate files.
 func CleanAndEject(usbPath string) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("eject is only supported on macOS")
@@ -292,14 +292,39 @@ func CleanAndEject(usbPath string) error {
 		wholeDisk = devID[:idx]
 	}
 
-	// Full cleanup pass
-	cleanMacOSJunk(usbPath)
+	// Step 1: Disable Spotlight BEFORE cleanup to reduce re-creation
+	exec.Command("mdutil", "-d", usbPath).Run()
+	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// IMMEDIATELY eject after cleanup — no gap for macOS to recreate files
-	cmd := exec.Command("diskutil", "eject", wholeDisk)
+	// Step 2: Delete everything as fast as possible, then eject IMMEDIATELY.
+	// We use a shell script to do delete+eject atomically with no Go overhead between them.
+	script := fmt.Sprintf(`
+rm -rf %q/.Spotlight-V100
+rm -rf %q/.fseventsd
+rm -rf %q/.Trashes
+rm -rf %q/.TemporaryItems
+rm -f %q/.DS_Store
+rm -f %q/.VolumeIcon.icns
+rm -f %q/.com.apple.timemachine.donotpresent
+rm -f %q/.metadata_never_index
+find %q -name '.DS_Store' -delete 2>/dev/null
+find %q -name '._*' -delete 2>/dev/null
+diskutil eject %s
+`,
+		usbPath, usbPath, usbPath, usbPath,
+		usbPath, usbPath, usbPath, usbPath,
+		usbPath, usbPath, wholeDisk,
+	)
+
+	cmd := exec.Command("bash", "-c", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("eject failed: %s (%w)", strings.TrimSpace(string(out)), err)
+		outStr := strings.TrimSpace(string(out))
+		// Check if eject actually happened despite rm errors
+		if strings.Contains(outStr, "ejected") {
+			return nil
+		}
+		return fmt.Errorf("clean & eject failed: %s (%w)", outStr, err)
 	}
 
 	return nil
