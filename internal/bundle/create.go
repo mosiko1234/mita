@@ -155,7 +155,6 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	zipPath := filepath.Join(usbPath, zipName)
 
 	// Check if USB is writable before attempting
-	wroteToUSB := false
 	if !isWritable(usbPath) {
 		// Fallback: write to ~/Desktop and let user copy manually
 		home, _ := os.UserHomeDir()
@@ -167,17 +166,17 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 		report(fmt.Sprintf("USB is read-only (NTFS on macOS?). Saving to: %s", fallbackDir))
 	} else {
 		report(fmt.Sprintf("Writing bundle to USB: %s", zipName))
-		wroteToUSB = true
 	}
 
 	if err := createZip(stageDir, zipPath); err != nil {
 		return "", fmt.Errorf("create zip: %w", err)
 	}
 
-	// Step 11: Clean macOS hidden files from USB so classified-side scanners don't block it
-	if wroteToUSB {
-		report("Cleaning macOS hidden files from USB...")
-		cleanMacOSJunk(usbPath)
+	// Step 11: Clean macOS hidden files from USB.
+	report("Cleaning macOS hidden files from USB...")
+	cleaned := cleanMacOSJunk(usbPath)
+	if !cleaned {
+		report("WARNING: Could not clean macOS files (USB is read-only). Format USB as exFAT to fix this.")
 	}
 
 	report("Export complete!")
@@ -187,7 +186,20 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 // cleanMacOSJunk removes hidden macOS metadata files/directories from a USB drive.
 // These files (Spotlight indexes, FSEvents, .DS_Store, resource forks, etc.) can cause
 // issues when the USB is scanned by classified-network security gateways.
-func cleanMacOSJunk(usbPath string) {
+func cleanMacOSJunk(usbPath string) bool {
+	// Quick check: if we can't write, no point trying to delete
+	if !isWritable(usbPath) {
+		return false
+	}
+
+	// First, try to prevent macOS from recreating Spotlight/fsevents on this volume
+	// mdutil -d disables Spotlight indexing; mdutil -X removes existing index
+	exec.Command("mdutil", "-d", usbPath).Run()
+	exec.Command("mdutil", "-X", usbPath).Run()
+
+	// Run dot_clean to merge ._ resource fork files into their parent files
+	exec.Command("dot_clean", "-m", usbPath).Run()
+
 	// Directories to remove recursively
 	junkDirs := []string{
 		".Spotlight-V100",
@@ -222,6 +234,8 @@ func cleanMacOSJunk(usbPath string) {
 		}
 		return nil
 	})
+
+	return true
 }
 
 // isWritable tests whether a path is writable by creating and removing a temp file.
