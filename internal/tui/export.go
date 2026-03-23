@@ -43,6 +43,10 @@ type exportProgressMsg struct {
 	percent float64
 }
 
+type usbEjectMsg struct {
+	err error
+}
+
 // listItem implements list.Item for the Bubbles list component.
 type listItem struct {
 	title string
@@ -74,6 +78,8 @@ type ExportModel struct {
 	spinner     spinner.Model
 
 	transferCursor int
+	summaryCursor  int
+	ejected        bool
 	progressStep   string
 	progressPct    float64
 	err            error
@@ -227,7 +233,18 @@ func (m *ExportModel) Update(app *App, msg tea.Msg) (tea.Model, tea.Cmd) {
 			return app, nil
 		}
 		m.bundlePath = msg.bundlePath
+		m.summaryCursor = 0
+		m.ejected = false
 		app.screen = ScreenExportSummary
+		return app, nil
+
+	case usbEjectMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.ejected = true
+		}
 		return app, nil
 
 	case spinner.TickMsg:
@@ -272,9 +289,16 @@ func (m *ExportModel) handleKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			app.screen = ScreenExportTransferType
 			return app, nil
 		case ScreenExportSummary:
-			app.screen = ScreenMainMenu
-			return app, nil
+			if !m.loading {
+				app.screen = ScreenMainMenu
+				return app, nil
+			}
 		}
+	}
+
+	// Handle summary screen menu
+	if app.screen == ScreenExportSummary && !m.loading {
+		return m.handleSummaryKey(app, msg)
 	}
 
 	switch app.screen {
@@ -431,6 +455,55 @@ func (m *ExportModel) viewTransferType() string {
 	return appStyle.Render(title + "\n\n" + menu + "\n" + help)
 }
 
+func (m *ExportModel) handleSummaryKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	menuCount := 3
+	if m.ejected {
+		menuCount = 2 // no eject option after ejection
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if m.summaryCursor > 0 {
+			m.summaryCursor--
+		}
+	case "down", "j":
+		if m.summaryCursor < menuCount-1 {
+			m.summaryCursor++
+		}
+	case "enter":
+		if m.ejected {
+			switch m.summaryCursor {
+			case 0: // Export another project (new USB needed)
+				app.screen = ScreenExportProjectSelect
+				m.loading = true
+				return app, tea.Batch(m.spinner.Tick, m.loadProjects())
+			case 1: // Main menu
+				app.screen = ScreenMainMenu
+			}
+		} else {
+			switch m.summaryCursor {
+			case 0: // Export another to same USB
+				app.screen = ScreenExportProjectSelect
+				m.loading = true
+				return app, tea.Batch(m.spinner.Tick, m.loadProjects())
+			case 1: // Clean & Eject USB
+				m.loading = true
+				return app, tea.Batch(m.spinner.Tick, m.cleanAndEject())
+			case 2: // Main menu
+				app.screen = ScreenMainMenu
+			}
+		}
+	}
+	return app, nil
+}
+
+func (m *ExportModel) cleanAndEject() tea.Cmd {
+	return func() tea.Msg {
+		err := bundle.CleanAndEject(m.selectedUSB.Path)
+		return usbEjectMsg{err: err}
+	}
+}
+
 func (m *ExportModel) viewSummary() string {
 	title := titleStyle.Render("Export - Complete")
 	status := successStyle.Render("Bundle created successfully!")
@@ -450,7 +523,51 @@ func (m *ExportModel) viewSummary() string {
 		status = errorStyle.Render("Export failed: " + m.err.Error())
 	}
 
-	help := helpStyle.Render("Press Esc or Enter to return to main menu")
+	// Loading state (ejecting)
+	if m.loading {
+		return appStyle.Render(boxStyle.Render(
+			title + "\n\n" + status + "\n" + details.String() + "\n\n" +
+				m.spinner.View() + " Cleaning and ejecting USB..."))
+	}
 
-	return appStyle.Render(boxStyle.Render(title + "\n\n" + status + "\n" + details.String() + "\n" + help))
+	// After eject
+	if m.ejected {
+		ejectStatus := "\n" + successStyle.Render("USB ejected safely. You can remove it now.") + "\n"
+
+		var menu string
+		items := []string{"Export another project", "Back to main menu"}
+		for i, item := range items {
+			cursor := "  "
+			style := menuItemStyle
+			if i == m.summaryCursor {
+				cursor = "> "
+				style = selectedMenuItemStyle
+			}
+			menu += style.Render(fmt.Sprintf("%s%s", cursor, item)) + "\n"
+		}
+
+		help := helpStyle.Render("Up/Down: Navigate  |  Enter: Select  |  Esc: Main menu")
+		return appStyle.Render(boxStyle.Render(title + "\n\n" + status + "\n" + details.String() + ejectStatus + "\n" + menu + "\n" + help))
+	}
+
+	// Normal summary with action menu
+	var menu string
+	items := []string{
+		"Export another project to same USB",
+		"Clean & Eject USB (remove macOS hidden files)",
+		"Back to main menu",
+	}
+	for i, item := range items {
+		cursor := "  "
+		style := menuItemStyle
+		if i == m.summaryCursor {
+			cursor = "> "
+			style = selectedMenuItemStyle
+		}
+		menu += style.Render(fmt.Sprintf("%s%s", cursor, item)) + "\n"
+	}
+
+	help := helpStyle.Render("Up/Down: Navigate  |  Enter: Select  |  Esc: Main menu")
+
+	return appStyle.Render(boxStyle.Render(title + "\n\n" + status + "\n" + details.String() + "\n" + menu + "\n" + help))
 }

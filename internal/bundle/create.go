@@ -273,6 +273,38 @@ func cleanMacOSJunk(usbPath string) bool {
 	return true
 }
 
+// CleanAndEject performs a thorough cleanup of macOS hidden files then ejects the USB.
+// The key insight: we clean, then IMMEDIATELY eject before macOS can recreate anything.
+func CleanAndEject(usbPath string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("eject is only supported on macOS")
+	}
+
+	// Find device before we start (need it for eject)
+	devID := findDeviceForMount(usbPath)
+	if devID == "" {
+		return fmt.Errorf("cannot find device for %s", usbPath)
+	}
+
+	// Find the whole disk (e.g. "disk2" from "disk2s2") for ejecting
+	wholeDisk := devID
+	if idx := strings.LastIndex(devID, "s"); idx > 4 {
+		wholeDisk = devID[:idx]
+	}
+
+	// Full cleanup pass
+	cleanMacOSJunk(usbPath)
+
+	// IMMEDIATELY eject after cleanup — no gap for macOS to recreate files
+	cmd := exec.Command("diskutil", "eject", wholeDisk)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("eject failed: %s (%w)", strings.TrimSpace(string(out)), err)
+	}
+
+	return nil
+}
+
 // findDeviceForMount finds the disk identifier (e.g. "disk2s2") for a mount point.
 func findDeviceForMount(mountPoint string) string {
 	cmd := exec.Command("mount")
