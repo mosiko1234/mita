@@ -7,4 +7,4 @@ dist/
 *.test
 *.out
 .DS_Store
-mita
+/mita

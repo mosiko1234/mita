@@ -110,7 +110,19 @@ func (m *ExportModel) Init() tea.Cmd {
 
 func (m *ExportModel) loadProjects() tea.Cmd {
 	return func() tea.Msg {
-		client, err := gitlab.NewClient(m.cfg.SourceGitLabURL, m.cfg.SourceToken, m.cfg.InsecureTLS)
+		var client *gitlab.Client
+		var err error
+
+		if m.cfg.SourceAuthMode == "basic" {
+			client, err = gitlab.NewClientWithBasicAuth(
+				m.cfg.SourceGitLabURL,
+				m.cfg.SourceUsername,
+				m.cfg.SourcePassword,
+				m.cfg.InsecureTLS,
+			)
+		} else {
+			client, err = gitlab.NewClient(m.cfg.SourceGitLabURL, m.cfg.SourceToken, m.cfg.InsecureTLS)
+		}
 		if err != nil {
 			return projectsLoadedMsg{err: err}
 		}

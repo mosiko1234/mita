@@ -3,7 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"mita/internal/bundle"
 	"mita/internal/config"
@@ -17,6 +20,8 @@ import (
 var version = "dev"
 
 func main() {
+	selfInstall()
+
 	if len(os.Args) < 2 {
 		runTUI()
 		return
@@ -27,13 +32,115 @@ func main() {
 		runExportCLI(os.Args[2:])
 	case "import":
 		runImportCLI(os.Args[2:])
+	case "install":
+		forceInstall()
 	case "version":
-		fmt.Printf("MITA %s\n", version)
+		fmt.Printf("MITA %s (Moses In The Ark)\n", version)
 	case "--version", "-v":
-		fmt.Printf("MITA %s\n", version)
+		fmt.Printf("MITA %s (Moses In The Ark)\n", version)
 	default:
 		runTUI()
 	}
+}
+
+// selfInstall copies the binary to a system PATH location on first run.
+func selfInstall() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return
+	}
+
+	var installPath string
+	if runtime.GOOS == "windows" {
+		// On Windows, install to %LOCALAPPDATA%\mita\mita.exe
+		appdata := os.Getenv("LOCALAPPDATA")
+		if appdata == "" {
+			return
+		}
+		installPath = filepath.Join(appdata, "mita", "mita.exe")
+	} else {
+		installPath = "/usr/local/bin/mita"
+	}
+
+	// Already installed at target — skip
+	if exe == installPath {
+		return
+	}
+
+	// Already exists at target — skip (use `mita install` to force)
+	if _, err := os.Stat(installPath); err == nil {
+		return
+	}
+
+	doInstall(exe, installPath)
+}
+
+func forceInstall() {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot determine executable path: %v\n", err)
+		os.Exit(1)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot resolve executable path: %v\n", err)
+		os.Exit(1)
+	}
+
+	var installPath string
+	if runtime.GOOS == "windows" {
+		appdata := os.Getenv("LOCALAPPDATA")
+		if appdata == "" {
+			fmt.Fprintln(os.Stderr, "LOCALAPPDATA not set")
+			os.Exit(1)
+		}
+		installPath = filepath.Join(appdata, "mita", "mita.exe")
+	} else {
+		installPath = "/usr/local/bin/mita"
+	}
+
+	if exe == installPath {
+		fmt.Println("Already installed at", installPath)
+		return
+	}
+
+	doInstall(exe, installPath)
+}
+
+func doInstall(src, dst string) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Install: cannot create dir: %v\n", err)
+		return
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Install: cannot open source: %v\n", err)
+		return
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		if os.IsPermission(err) && runtime.GOOS != "windows" {
+			fmt.Printf("\n  To install MITA globally, run:\n  sudo cp %s %s\n\n", src, dst)
+		} else {
+			fmt.Fprintf(os.Stderr, "Install: %v\n", err)
+		}
+		return
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		fmt.Fprintf(os.Stderr, "Install: copy failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Installed MITA to %s — you can now run 'mita' from anywhere.\n", dst)
 }
 
 func runTUI() {
@@ -53,6 +160,8 @@ func runExportCLI(args []string) {
 	usbPath := fs.String("usb", "", "USB drive path")
 	gitlabURL := fs.String("gitlab-url", "", "GitLab URL (overrides config)")
 	token := fs.String("token", "", "GitLab private token")
+	user := fs.String("user", "", "GitLab username (basic auth)")
+	pass := fs.String("pass", "", "GitLab password (basic auth)")
 
 	fs.Parse(args)
 
@@ -72,9 +181,22 @@ func runExportCLI(args []string) {
 	}
 	if *token != "" {
 		cfg.SourceToken = *token
+		cfg.SourceAuthMode = "token"
+	}
+	if *user != "" {
+		cfg.SourceUsername = *user
+		cfg.SourceAuthMode = "basic"
+	}
+	if *pass != "" {
+		cfg.SourcePassword = *pass
 	}
 
-	client, err := gitlab.NewClient(cfg.SourceGitLabURL, cfg.SourceToken, cfg.InsecureTLS)
+	var client *gitlab.Client
+	if cfg.SourceAuthMode == "basic" {
+		client, err = gitlab.NewClientWithBasicAuth(cfg.SourceGitLabURL, cfg.SourceUsername, cfg.SourcePassword, cfg.InsecureTLS)
+	} else {
+		client, err = gitlab.NewClient(cfg.SourceGitLabURL, cfg.SourceToken, cfg.InsecureTLS)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating GitLab client: %v\n", err)
 		os.Exit(1)

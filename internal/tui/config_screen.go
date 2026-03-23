@@ -16,7 +16,7 @@ type ConfigModel struct {
 	cursor     int
 	inputs     []textinput.Model
 	inputFocus int
-	subScreen  int // 0=menu, 1=gitlab, 2=creds, 3=mappings
+	subScreen  int // 0=menu, 1=gitlab, 2=creds, 3=mappings, 4=security
 	mappingIdx int
 	message    string
 }
@@ -59,43 +59,48 @@ func (m *ConfigModel) handleKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.subScreen {
-	case 0: // Config menu
+	case 0:
 		return m.handleConfigMenu(app, msg)
-	case 1: // GitLab URL
+	case 1:
 		return m.handleGitLabURL(app, msg)
-	case 2: // Credentials
+	case 2:
 		return m.handleCredentials(app, msg)
-	case 3: // Mappings
+	case 3:
 		return m.handleMappings(app, msg)
+	case 4:
+		return m.handleSecurity(app, msg)
 	}
 
 	return app, nil
 }
 
 func (m *ConfigModel) handleConfigMenu(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	menuCount := 5
 	switch msg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < 3 {
+		if m.cursor < menuCount-1 {
 			m.cursor++
 		}
 	case "enter":
 		switch m.cursor {
-		case 0: // GitLab URL
+		case 0: // GitLab URLs
 			m.subScreen = 1
 			app.screen = ScreenConfigGitLabURL
 			m.initGitLabURLInputs()
-		case 1: // Credentials
+		case 1: // Source Credentials
 			m.subScreen = 2
 			app.screen = ScreenConfigCredentials
 			m.initCredentialInputs()
-		case 2: // Mappings
+		case 2: // Security (TLS)
+			m.subScreen = 4
+		case 3: // Mappings
 			m.subScreen = 3
 			app.screen = ScreenConfigMappings
-		case 3: // Back
+		case 4: // Back
 			app.screen = ScreenMainMenu
 		}
 	}
@@ -118,21 +123,56 @@ func (m *ConfigModel) initGitLabURLInputs() {
 }
 
 func (m *ConfigModel) initCredentialInputs() {
-	m.inputs = make([]textinput.Model, 3)
+	if m.cfg.SourceAuthMode == "" {
+		m.cfg.SourceAuthMode = "token"
+	}
 
-	m.inputs[0] = textinput.New()
-	m.inputs[0].Placeholder = "Private token (for source GitLab)"
-	m.inputs[0].SetValue(m.cfg.SourceToken)
-	m.inputs[0].Focus()
+	if m.cfg.SourceAuthMode == "basic" {
+		m.inputs = make([]textinput.Model, 5)
 
-	m.inputs[1] = textinput.New()
-	m.inputs[1].Placeholder = "Username (for target GitLab)"
-	m.inputs[1].SetValue(m.cfg.TargetUsername)
+		m.inputs[0] = textinput.New()
+		m.inputs[0].Placeholder = "Source username"
+		m.inputs[0].SetValue(m.cfg.SourceUsername)
+		m.inputs[0].Focus()
 
-	m.inputs[2] = textinput.New()
-	m.inputs[2].Placeholder = "Password (for target GitLab)"
-	m.inputs[2].EchoMode = textinput.EchoPassword
-	m.inputs[2].SetValue(m.cfg.TargetPassword)
+		m.inputs[1] = textinput.New()
+		m.inputs[1].Placeholder = "Source password"
+		m.inputs[1].EchoMode = textinput.EchoPassword
+		m.inputs[1].SetValue(m.cfg.SourcePassword)
+
+		m.inputs[2] = textinput.New()
+		m.inputs[2].Placeholder = "Target username"
+		m.inputs[2].SetValue(m.cfg.TargetUsername)
+
+		m.inputs[3] = textinput.New()
+		m.inputs[3].Placeholder = "Target password"
+		m.inputs[3].EchoMode = textinput.EchoPassword
+		m.inputs[3].SetValue(m.cfg.TargetPassword)
+
+		// Hidden dummy to detect "last field enter"
+		m.inputs[4] = textinput.New()
+		m.inputs[4].Placeholder = ""
+	} else {
+		m.inputs = make([]textinput.Model, 4)
+
+		m.inputs[0] = textinput.New()
+		m.inputs[0].Placeholder = "Private token (for source GitLab)"
+		m.inputs[0].SetValue(m.cfg.SourceToken)
+		m.inputs[0].Focus()
+
+		m.inputs[1] = textinput.New()
+		m.inputs[1].Placeholder = "Target username"
+		m.inputs[1].SetValue(m.cfg.TargetUsername)
+
+		m.inputs[2] = textinput.New()
+		m.inputs[2].Placeholder = "Target password"
+		m.inputs[2].EchoMode = textinput.EchoPassword
+		m.inputs[2].SetValue(m.cfg.TargetPassword)
+
+		// Hidden dummy
+		m.inputs[3] = textinput.New()
+		m.inputs[3].Placeholder = ""
+	}
 
 	m.inputFocus = 0
 }
@@ -164,24 +204,64 @@ func (m *ConfigModel) handleCredentials(app *App, msg tea.KeyMsg) (tea.Model, te
 	switch msg.String() {
 	case "tab", "shift+tab":
 		m.cycleFocus(msg.String() == "shift+tab")
+	case "ctrl+a":
+		// Toggle auth mode
+		if m.cfg.SourceAuthMode == "basic" {
+			m.cfg.SourceAuthMode = "token"
+		} else {
+			m.cfg.SourceAuthMode = "basic"
+		}
+		m.initCredentialInputs()
+		return app, nil
 	case "enter":
-		if m.inputFocus == len(m.inputs)-1 {
-			m.cfg.SourceToken = m.inputs[0].Value()
-			m.cfg.TargetUsername = m.inputs[1].Value()
-			m.cfg.TargetPassword = m.inputs[2].Value()
-			if err := m.cfg.Save(""); err != nil {
-				m.message = "Error saving: " + err.Error()
-			} else {
-				m.message = "Saved!"
-			}
+		lastReal := len(m.inputs) - 2 // last real field before dummy
+		if m.inputFocus >= lastReal {
+			m.saveCredentials()
 			return app, nil
 		}
 		m.cycleFocus(false)
 	}
 
-	var cmd tea.Cmd
-	m.inputs[m.inputFocus], cmd = m.inputs[m.inputFocus].Update(msg)
-	return app, cmd
+	if m.inputFocus < len(m.inputs) {
+		var cmd tea.Cmd
+		m.inputs[m.inputFocus], cmd = m.inputs[m.inputFocus].Update(msg)
+		return app, cmd
+	}
+	return app, nil
+}
+
+func (m *ConfigModel) saveCredentials() {
+	if m.cfg.SourceAuthMode == "basic" {
+		m.cfg.SourceUsername = m.inputs[0].Value()
+		m.cfg.SourcePassword = m.inputs[1].Value()
+		m.cfg.TargetUsername = m.inputs[2].Value()
+		m.cfg.TargetPassword = m.inputs[3].Value()
+		m.cfg.SourceToken = "" // clear token
+	} else {
+		m.cfg.SourceToken = m.inputs[0].Value()
+		m.cfg.TargetUsername = m.inputs[1].Value()
+		m.cfg.TargetPassword = m.inputs[2].Value()
+		m.cfg.SourceUsername = "" // clear basic
+		m.cfg.SourcePassword = ""
+	}
+	if err := m.cfg.Save(""); err != nil {
+		m.message = "Error saving: " + err.Error()
+	} else {
+		m.message = "Saved!"
+	}
+}
+
+func (m *ConfigModel) handleSecurity(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", " ":
+		m.cfg.InsecureTLS = !m.cfg.InsecureTLS
+		if err := m.cfg.Save(""); err != nil {
+			m.message = "Error saving: " + err.Error()
+		} else {
+			m.message = "Saved!"
+		}
+	}
+	return app, nil
 }
 
 func (m *ConfigModel) handleMappings(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -214,15 +294,20 @@ func (m *ConfigModel) handleMappings(app *App, msg tea.KeyMsg) (tea.Model, tea.C
 }
 
 func (m *ConfigModel) cycleFocus(backward bool) {
+	realCount := len(m.inputs) - 1 // exclude dummy last input
+	if realCount < 1 {
+		realCount = len(m.inputs)
+	}
+
 	if backward {
 		m.inputFocus--
 	} else {
 		m.inputFocus++
 	}
 	if m.inputFocus < 0 {
-		m.inputFocus = len(m.inputs) - 1
+		m.inputFocus = realCount - 1
 	}
-	if m.inputFocus >= len(m.inputs) {
+	if m.inputFocus >= realCount {
 		m.inputFocus = 0
 	}
 	for i := range m.inputs {
@@ -244,6 +329,8 @@ func (m *ConfigModel) View(app *App) string {
 		return m.viewCredentials()
 	case 3:
 		return m.viewMappings()
+	case 4:
+		return m.viewSecurity()
 	}
 	return ""
 }
@@ -254,6 +341,7 @@ func (m *ConfigModel) viewConfigMenu() string {
 	items := []string{
 		"GitLab URLs",
 		"Credentials",
+		"Security (TLS)",
 		"Project Mappings",
 		"Back to Main Menu",
 	}
@@ -270,9 +358,20 @@ func (m *ConfigModel) viewConfigMenu() string {
 	}
 
 	// Show current config summary
+	authMode := m.cfg.SourceAuthMode
+	if authMode == "" {
+		authMode = "token"
+	}
+	tlsStatus := "Secure (verify certificates)"
+	if m.cfg.InsecureTLS {
+		tlsStatus = "Insecure (skip verification)"
+	}
+
 	summary := "\n" + mutedStyle.Render("Current Configuration:") + "\n"
 	summary += fmt.Sprintf("  Source: %s\n", m.cfg.SourceGitLabURL)
 	summary += fmt.Sprintf("  Target: %s\n", m.cfg.TargetGitLabURL)
+	summary += fmt.Sprintf("  Auth:   %s\n", authMode)
+	summary += fmt.Sprintf("  TLS:    %s\n", tlsStatus)
 	summary += fmt.Sprintf("  Mappings: %d\n", len(m.cfg.Mappings.Entries))
 
 	help := helpStyle.Render("Up/Down: Navigate  |  Enter: Select  |  Esc: Back")
@@ -306,10 +405,27 @@ func (m *ConfigModel) viewGitLabURL() string {
 func (m *ConfigModel) viewCredentials() string {
 	title := titleStyle.Render("Configuration - Credentials")
 
+	authMode := m.cfg.SourceAuthMode
+	if authMode == "" {
+		authMode = "token"
+	}
+	modeLabel := "Token (Private Token / API Key)"
+	if authMode == "basic" {
+		modeLabel = "Basic Auth (Username + Password)"
+	}
+	authInfo := statusStyle.Render("Source Auth Mode: "+modeLabel) + "\n\n"
+
 	var form strings.Builder
-	labels := []string{"Source Token:", "Target Username:", "Target Password:"}
-	for i, input := range m.inputs {
-		form.WriteString(labelStyle.Render(labels[i]) + "\n" + input.View() + "\n\n")
+	if authMode == "basic" {
+		labels := []string{"Source Username:", "Source Password:", "Target Username:", "Target Password:"}
+		for i := 0; i < 4 && i < len(m.inputs); i++ {
+			form.WriteString(labelStyle.Render(labels[i]) + "\n" + m.inputs[i].View() + "\n\n")
+		}
+	} else {
+		labels := []string{"Source Token:", "Target Username:", "Target Password:"}
+		for i := 0; i < 3 && i < len(m.inputs); i++ {
+			form.WriteString(labelStyle.Render(labels[i]) + "\n" + m.inputs[i].View() + "\n\n")
+		}
 	}
 
 	msg := ""
@@ -321,9 +437,40 @@ func (m *ConfigModel) viewCredentials() string {
 		}
 	}
 
-	help := helpStyle.Render("Tab: Next field  |  Enter: Save  |  Esc: Back")
+	help := helpStyle.Render("Tab: Next  |  Ctrl+A: Toggle auth mode  |  Enter: Save  |  Esc: Back")
 
-	return appStyle.Render(boxStyle.Render(title + "\n\n" + form.String() + msg + "\n" + help))
+	return appStyle.Render(boxStyle.Render(title + "\n\n" + authInfo + form.String() + msg + "\n" + help))
+}
+
+func (m *ConfigModel) viewSecurity() string {
+	title := titleStyle.Render("Configuration - Security")
+
+	checkbox := "[ ]"
+	if m.cfg.InsecureTLS {
+		checkbox = "[x]"
+	}
+
+	content := fmt.Sprintf(
+		"%s  Allow insecure TLS (skip certificate verification)\n\n"+
+			"%s\n"+
+			"%s",
+		checkbox,
+		mutedStyle.Render("Enable this for self-signed certificates on air-gapped GitLab instances."),
+		mutedStyle.Render("Required when GitLab uses untrusted/internal CA."),
+	)
+
+	msg := ""
+	if m.message != "" {
+		if strings.HasPrefix(m.message, "Error") {
+			msg = "\n" + errorStyle.Render(m.message)
+		} else {
+			msg = "\n" + successStyle.Render(m.message)
+		}
+	}
+
+	help := helpStyle.Render("Enter/Space: Toggle  |  Esc: Back")
+
+	return appStyle.Render(boxStyle.Render(title + "\n\n" + content + msg + "\n\n" + help))
 }
 
 func (m *ConfigModel) viewMappings() string {

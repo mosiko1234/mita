@@ -13,18 +13,22 @@ const (
 )
 
 type Config struct {
-	SourceGitLabURL string          `json:"source_gitlab_url"`
-	SourceToken     string          `json:"source_token,omitempty"`
-	TargetGitLabURL string          `json:"target_gitlab_url"`
-	TargetUsername  string          `json:"target_username,omitempty"`
-	TargetPassword  string          `json:"target_password,omitempty"`
-	InsecureTLS     bool            `json:"insecure_tls"`
-	Mappings        ProjectMappings `json:"mappings"`
+	SourceGitLabURL  string          `json:"source_gitlab_url"`
+	SourceAuthMode   string          `json:"source_auth_mode"` // "token" or "basic"
+	SourceToken      string          `json:"source_token,omitempty"`
+	SourceUsername   string          `json:"source_username,omitempty"`
+	SourcePassword   string          `json:"source_password,omitempty"`
+	TargetGitLabURL  string          `json:"target_gitlab_url"`
+	TargetUsername   string          `json:"target_username,omitempty"`
+	TargetPassword   string          `json:"target_password,omitempty"`
+	InsecureTLS      bool            `json:"insecure_tls"`
+	Mappings         ProjectMappings `json:"mappings"`
 }
 
 func DefaultConfig() *Config {
 	return &Config{
 		SourceGitLabURL: "https://192.168.102.104/",
+		SourceAuthMode:  "token",
 		InsecureTLS:     true,
 		Mappings: ProjectMappings{
 			Entries: make(map[string]MappingEntry),
