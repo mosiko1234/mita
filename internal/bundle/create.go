@@ -177,6 +177,12 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	report("Cleaning macOS metadata files from USB...")
 	if !cleanMacOSJunk(usbPath) {
 		report("WARNING: Could not clean macOS files (USB is read-only). Format USB as exFAT to fix this.")
+	} else {
+		// Check if .Spotlight-V100 survived cleanup
+		spotlightCheck := filepath.Join(usbPath, ".Spotlight-V100")
+		if _, err := os.Stat(spotlightCheck); err == nil {
+			report("TIP: .Spotlight-V100 could not be removed. Grant Terminal 'Full Disk Access' in System Settings > Privacy & Security to fix this.")
+		}
 	}
 
 	report("Export complete!")
@@ -232,8 +238,21 @@ func cleanMacOSJunk(usbPath string) bool {
 		return nil
 	})
 
-	// Note: .Spotlight-V100 is SIP-protected and cannot be removed.
-	// On a clean USB it's an empty directory — harmless for scanners.
+	// Try to remove .Spotlight-V100 — requires Full Disk Access for Terminal.
+	// First try normal rm, then try via osascript with admin privileges.
+	spotlightPath := filepath.Join(usbPath, ".Spotlight-V100")
+	if _, err := os.Stat(spotlightPath); err == nil {
+		// Try 1: direct removal (works if Terminal has Full Disk Access)
+		if os.RemoveAll(spotlightPath) != nil {
+			// Try 2: sudo rm via osascript (shows password prompt)
+			script := fmt.Sprintf(
+				`do shell script "rm -rf %q && rm -rf %q" with administrator privileges`,
+				spotlightPath,
+				filepath.Join(usbPath, ".Trashes"),
+			)
+			exec.Command("osascript", "-e", script).Run()
+		}
+	}
 
 	return true
 }
