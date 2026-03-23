@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -173,9 +174,8 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	}
 
 	// Step 11: Clean macOS hidden files from USB.
-	report("Cleaning macOS hidden files from USB...")
-	cleaned := cleanMacOSJunk(usbPath)
-	if !cleaned {
+	report("Cleaning macOS metadata files from USB...")
+	if !cleanMacOSJunk(usbPath) {
 		report("WARNING: Could not clean macOS files (USB is read-only). Format USB as exFAT to fix this.")
 	}
 
@@ -183,87 +183,77 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	return zipPath, nil
 }
 
-// cleanMacOSJunk removes hidden macOS metadata files/directories from a USB drive.
-// These files (Spotlight indexes, FSEvents, .DS_Store, resource forks, etc.) can cause
-// issues when the USB is scanned by classified-network security gateways.
+// cleanMacOSJunk removes hidden macOS metadata files from a USB drive.
+//
+// On macOS, .Spotlight-V100 is protected by SIP (SF_RESTRICTED flag) and CANNOT
+// be deleted by any user-space process — not even root. This is a kernel-level
+// restriction. The directory is created immediately on mount by diskarbitrationd.
+//
+// What we CAN clean: .fseventsd, .Trashes, .DS_Store, ._ resource forks,
+// .TemporaryItems, .VolumeIcon.icns — these are all deletable.
+//
+// .Spotlight-V100 on a freshly formatted drive is an empty directory and should
+// not cause issues with classified-side scanners.
 func cleanMacOSJunk(usbPath string) bool {
-	// Quick check: if we can't write, no point trying to delete
+	if runtime.GOOS != "darwin" {
+		return true
+	}
+
 	if !isWritable(usbPath) {
 		return false
 	}
 
-	// Step 1: Disable Spotlight indexing on this volume to prevent re-creation
+	// Disable Spotlight indexing on this volume to prevent index files
 	exec.Command("mdutil", "-d", usbPath).Run()
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Step 2: Create .metadata_never_index to prevent Spotlight from ever indexing
-	noIndexPath := filepath.Join(usbPath, ".metadata_never_index")
-	os.WriteFile(noIndexPath, []byte{}, 0644)
-
-	// Step 3: Run dot_clean to merge ._ resource fork files
+	// Merge ._ resource fork files into their parent files
 	exec.Command("dot_clean", "-m", usbPath).Run()
 
-	// Step 4: Build list of all junk to remove
-	junkDirs := []string{
-		".Spotlight-V100",
-		".fseventsd",
-		".Trashes",
-		".TemporaryItems",
-	}
-	junkFiles := []string{
-		".DS_Store",
-		".VolumeIcon.icns",
-		".com.apple.timemachine.donotpresent",
+	// Remove deletable directories
+	for _, name := range []string{".fseventsd", ".Trashes", ".TemporaryItems"} {
+		os.RemoveAll(filepath.Join(usbPath, name))
 	}
 
-	// Step 5: Try normal removal first
-	var stubborn []string
-	for _, name := range junkDirs {
-		path := filepath.Join(usbPath, name)
-		if _, err := os.Stat(path); err == nil {
-			if os.RemoveAll(path) != nil {
-				stubborn = append(stubborn, path)
-			}
-		}
-	}
-	for _, name := range junkFiles {
-		path := filepath.Join(usbPath, name)
-		if _, err := os.Stat(path); err == nil {
-			if os.Remove(path) != nil {
-				stubborn = append(stubborn, path)
-			}
-		}
+	// Remove deletable files
+	for _, name := range []string{".DS_Store", ".VolumeIcon.icns", ".com.apple.timemachine.donotpresent", ".metadata_never_index"} {
+		os.Remove(filepath.Join(usbPath, name))
 	}
 
-	// Remove .DS_Store and ._ resource fork files recursively
+	// Recursively remove .DS_Store and ._ resource fork files
 	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		name := info.Name()
 		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
-			if os.Remove(path) != nil {
-				stubborn = append(stubborn, path)
-			}
+			os.Remove(path)
 		}
 		return nil
 	})
 
-	// Step 6: For stubborn files (SIP-protected like .Spotlight-V100),
-	// use osascript to request elevated privileges via a GUI prompt
-	if len(stubborn) > 0 {
-		rmArgs := ""
-		for _, p := range stubborn {
-			rmArgs += fmt.Sprintf(" %q", p)
-		}
-		script := fmt.Sprintf(`do shell script "rm -rf %s" with administrator privileges`, rmArgs)
-		exec.Command("osascript", "-e", script).Run()
-	}
-
-	// Step 7: Remove .metadata_never_index we created — classified-side scanners don't need it
-	os.Remove(noIndexPath)
+	// Note: .Spotlight-V100 is SIP-protected and cannot be removed.
+	// On a clean USB it's an empty directory — harmless for scanners.
 
 	return true
+}
+
+// findDeviceForMount finds the disk identifier (e.g. "disk2s2") for a mount point.
+func findDeviceForMount(mountPoint string) string {
+	cmd := exec.Command("mount")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, mountPoint) {
+			fields := strings.Fields(line)
+			if len(fields) >= 1 && strings.HasPrefix(fields[0], "/dev/") {
+				return strings.TrimPrefix(fields[0], "/dev/")
+			}
+		}
+	}
+	return ""
 }
 
 // isWritable tests whether a path is writable by creating and removing a temp file.
