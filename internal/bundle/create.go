@@ -254,6 +254,22 @@ func cleanMacOSJunk(usbPath string) bool {
 		}
 	}
 
+	// Final pass: clean any ._ resource forks and .fseventsd that may have been
+	// recreated by macOS after the Spotlight deletion above
+	for _, name := range []string{".fseventsd", ".Trashes", ".TemporaryItems"} {
+		os.RemoveAll(filepath.Join(usbPath, name))
+	}
+	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := info.Name()
+		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
+			os.Remove(path)
+		}
+		return nil
+	})
+
 	return true
 }
 
