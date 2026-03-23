@@ -155,6 +155,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	zipPath := filepath.Join(usbPath, zipName)
 
 	// Check if USB is writable before attempting
+	wroteToUSB := false
 	if !isWritable(usbPath) {
 		// Fallback: write to ~/Desktop and let user copy manually
 		home, _ := os.UserHomeDir()
@@ -166,14 +167,61 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 		report(fmt.Sprintf("USB is read-only (NTFS on macOS?). Saving to: %s", fallbackDir))
 	} else {
 		report(fmt.Sprintf("Writing bundle to USB: %s", zipName))
+		wroteToUSB = true
 	}
 
 	if err := createZip(stageDir, zipPath); err != nil {
 		return "", fmt.Errorf("create zip: %w", err)
 	}
 
+	// Step 11: Clean macOS hidden files from USB so classified-side scanners don't block it
+	if wroteToUSB {
+		report("Cleaning macOS hidden files from USB...")
+		cleanMacOSJunk(usbPath)
+	}
+
 	report("Export complete!")
 	return zipPath, nil
+}
+
+// cleanMacOSJunk removes hidden macOS metadata files/directories from a USB drive.
+// These files (Spotlight indexes, FSEvents, .DS_Store, resource forks, etc.) can cause
+// issues when the USB is scanned by classified-network security gateways.
+func cleanMacOSJunk(usbPath string) {
+	// Directories to remove recursively
+	junkDirs := []string{
+		".Spotlight-V100",
+		".fseventsd",
+		".Trashes",
+		".TemporaryItems",
+	}
+	for _, name := range junkDirs {
+		path := filepath.Join(usbPath, name)
+		os.RemoveAll(path)
+	}
+
+	// Individual files to remove
+	junkFiles := []string{
+		".DS_Store",
+		".VolumeIcon.icns",
+		".com.apple.timemachine.donotpresent",
+	}
+	for _, name := range junkFiles {
+		path := filepath.Join(usbPath, name)
+		os.Remove(path)
+	}
+
+	// Remove .DS_Store and ._ resource fork files recursively
+	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip errors (permission denied etc.)
+		}
+		name := info.Name()
+		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
+			os.Remove(path)
+		}
+		return nil
+	})
 }
 
 // isWritable tests whether a path is writable by creating and removing a temp file.
