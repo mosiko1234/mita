@@ -146,6 +146,7 @@ func doInstall(src, dst string) {
 func runTUI() {
 	app := tui.NewApp(version)
 	p := tea.NewProgram(app, tea.WithAltScreen())
+	app.SetProgram(p)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 		os.Exit(1)
@@ -222,7 +223,10 @@ func runExportCLI(args []string) {
 
 	fmt.Printf("Exporting project %s (branch: %s, type: %s) to %s\n", *project, *branch, *depth, *usbPath)
 
-	bundlePath, err := bundle.Create(client, *project, *branch, shallow, *usbPath)
+	cliProgress := func(step string) {
+		fmt.Println(step)
+	}
+	bundlePath, err := bundle.Create(client, *project, *branch, shallow, *usbPath, cliProgress)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Export failed: %v\n", err)
 		os.Exit(1)

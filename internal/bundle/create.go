@@ -14,8 +14,18 @@ import (
 	"mita/internal/gitlab"
 )
 
+// ProgressFunc is called during export to report progress steps.
+type ProgressFunc func(step string)
+
 // Create packages a Git project into an .mita.zip bundle on the target path (USB).
-func Create(client *gitlab.Client, projectName, branch string, shallow bool, usbPath string) (string, error) {
+// The progress callback is optional; pass nil to suppress output.
+func Create(client *gitlab.Client, projectName, branch string, shallow bool, usbPath string, onProgress ProgressFunc) (string, error) {
+	report := func(step string) {
+		if onProgress != nil {
+			onProgress(step)
+		}
+	}
+
 	// Create temporary working directory
 	tmpDir, err := os.MkdirTemp("", "mita-export-*")
 	if err != nil {
@@ -24,6 +34,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	defer os.RemoveAll(tmpDir)
 
 	// Find the project
+	report("Finding project...")
 	projects, err := client.ListProjects(projectName)
 	if err != nil {
 		return "", fmt.Errorf("list projects: %w", err)
@@ -56,7 +67,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	}
 
 	// Step 1: Clone
-	fmt.Printf("Cloning %s...\n", projectName)
+	report(fmt.Sprintf("Cloning %s...", projectName))
 	cloneOpts := gitlab.CloneOptions{
 		URL:         cloneURL,
 		Branch:      branch,
@@ -69,14 +80,14 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	}
 
 	// Step 2: Fetch LFS objects
-	fmt.Println("Fetching LFS objects...")
+	report("Fetching LFS objects...")
 	gitlab.FetchLFS(cloneDir, client.IsInsecureTLS()) // ignore error if no LFS
 
 	// Step 3: Get commit SHA
 	commitSHA := getHeadCommit(cloneDir)
 
 	// Step 4: Create bare repo and push
-	fmt.Println("Creating bare repository...")
+	report("Creating bare repository...")
 	if err := gitlab.CreateBareRepo(cloneDir, bareDir); err != nil {
 		return "", fmt.Errorf("create bare repo: %w", err)
 	}
@@ -85,7 +96,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	gitlab.PushLFSToBare(cloneDir, bareDir) // ignore error if no LFS
 
 	// Step 6: Create git bundle
-	fmt.Println("Creating git bundle...")
+	report("Creating git bundle...")
 	bundleFile := filepath.Join(stageDir, "repo.bundle")
 	if err := gitlab.CreateGitBundle(bareDir, bundleFile); err != nil {
 		return "", fmt.Errorf("create git bundle: %w", err)
@@ -95,7 +106,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	lfsObjects, _ := FindLFSObjects(bareDir)
 	hasLFS := len(lfsObjects) > 0
 	if hasLFS {
-		fmt.Printf("Copying %d LFS objects...\n", len(lfsObjects))
+		report(fmt.Sprintf("Copying %d LFS objects...", len(lfsObjects)))
 		lfsStageDir := filepath.Join(stageDir, "lfs")
 		if err := CopyLFSObjects(bareDir, lfsStageDir, lfsObjects); err != nil {
 			return "", fmt.Errorf("copy LFS objects: %w", err)
@@ -125,7 +136,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	}
 
 	// Step 9: Calculate checksums
-	fmt.Println("Calculating checksums...")
+	report("Calculating checksums...")
 	checksumFiles := []string{"manifest.json", "repo.bundle"}
 	if hasLFS {
 		for _, obj := range lfsObjects {
@@ -138,16 +149,17 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 		return "", fmt.Errorf("generate checksums: %w", err)
 	}
 
-	// Step 10: Create ZIP
+	// Step 10: Create ZIP on USB
 	timestamp := time.Now().Format("20060102-150405")
 	zipName := fmt.Sprintf("%s-%s.mita.zip", sanitizeName(projectName), timestamp)
 	zipPath := filepath.Join(usbPath, zipName)
 
-	fmt.Printf("Creating bundle: %s\n", zipName)
+	report(fmt.Sprintf("Writing bundle to USB: %s", zipName))
 	if err := createZip(stageDir, zipPath); err != nil {
 		return "", fmt.Errorf("create zip: %w", err)
 	}
 
+	report("Export complete!")
 	return zipPath, nil
 }
 

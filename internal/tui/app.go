@@ -44,6 +44,7 @@ type App struct {
 	exportModel *ExportModel
 	importModel *ImportModel
 	configModel *ConfigModel
+	program     *tea.Program
 }
 
 // NewApp creates a new TUI application.
@@ -57,7 +58,13 @@ func NewApp(version string) *App {
 		version: version,
 		screen:  ScreenMainMenu,
 		cfg:     cfg,
+		program: nil, // set after tea.NewProgram
 	}
+}
+
+// SetProgram stores the tea.Program reference for sending async messages.
+func (a *App) SetProgram(p *tea.Program) {
+	a.program = p
 }
 
 func (a *App) Init() tea.Cmd {

@@ -147,14 +147,21 @@ func detectUSBDrivesCmd() tea.Cmd {
 	}
 }
 
-func (m *ExportModel) runExport() tea.Cmd {
+func (m *ExportModel) runExport(p *tea.Program) tea.Cmd {
 	return func() tea.Msg {
+		progress := func(step string) {
+			if p != nil {
+				p.Send(exportProgressMsg{step: step})
+			}
+		}
+
 		bundlePath, err := bundle.Create(
 			m.client,
 			m.selectedProj.Name,
 			m.selectedBranch,
 			m.shallow,
 			m.selectedUSB.Path,
+			progress,
 		)
 		return exportCompleteMsg{bundlePath: bundlePath, err: err}
 	}
@@ -207,6 +214,10 @@ func (m *ExportModel) Update(app *App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.usbList = list.New(items, list.NewDefaultDelegate(), 60, 15)
 		m.usbList.Title = "Select USB Drive"
+		return app, nil
+
+	case exportProgressMsg:
+		m.progressStep = msg.step
 		return app, nil
 
 	case exportCompleteMsg:
@@ -323,7 +334,7 @@ func (m *ExportModel) handleKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				app.screen = ScreenExportProgress
 				m.loading = true
 				m.progressStep = "Starting export..."
-				return app, tea.Batch(m.spinner.Tick, m.runExport())
+				return app, tea.Batch(m.spinner.Tick, m.runExport(app.program))
 			}
 		}
 		var cmd tea.Cmd
