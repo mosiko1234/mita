@@ -530,9 +530,9 @@ func (m *ExportModel) viewSummary() string {
 				m.spinner.View() + " Cleaning and ejecting USB..."))
 	}
 
-	// After eject
+	// After eject attempt
 	if m.ejected {
-		ejectStatus := "\n" + successStyle.Render("USB ejected safely. You can remove it now.") + "\n"
+		ejectStatus := "\n" + successStyle.Render("✓ USB cleaned and ejected safely. You can remove it now.") + "\n"
 
 		var menu string
 		items := []string{"Export another project", "Back to main menu"}
@@ -548,6 +548,13 @@ func (m *ExportModel) viewSummary() string {
 
 		help := helpStyle.Render("Up/Down: Navigate  |  Enter: Select  |  Esc: Main menu")
 		return appStyle.Render(boxStyle.Render(title + "\n\n" + status + "\n" + details.String() + ejectStatus + "\n" + menu + "\n" + help))
+	}
+
+	// Eject failed — show error
+	if m.err != nil && !m.ejected {
+		ejectErr := "\n" + errorStyle.Render("Eject failed: "+m.err.Error()) + "\n"
+		help := helpStyle.Render("Press Esc to return to main menu")
+		return appStyle.Render(boxStyle.Render(title + "\n\n" + status + "\n" + details.String() + ejectErr + "\n" + help))
 	}
 
 	// Normal summary with action menu

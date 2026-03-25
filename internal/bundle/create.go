@@ -296,35 +296,35 @@ func CleanAndEject(usbPath string) error {
 	exec.Command("mdutil", "-d", usbPath).Run()
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Step 2: Delete everything as fast as possible, then eject IMMEDIATELY.
-	// We use a shell script to do delete+eject atomically with no Go overhead between them.
-	script := fmt.Sprintf(`
-rm -rf %q/.Spotlight-V100
-rm -rf %q/.fseventsd
-rm -rf %q/.Trashes
-rm -rf %q/.TemporaryItems
-rm -f %q/.DS_Store
-rm -f %q/.VolumeIcon.icns
-rm -f %q/.com.apple.timemachine.donotpresent
-rm -f %q/.metadata_never_index
-find %q -name '.DS_Store' -delete 2>/dev/null
-find %q -name '._*' -delete 2>/dev/null
-diskutil eject %s
-`,
-		usbPath, usbPath, usbPath, usbPath,
-		usbPath, usbPath, usbPath, usbPath,
-		usbPath, usbPath, wholeDisk,
-	)
-
-	cmd := exec.Command("bash", "-c", script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		outStr := strings.TrimSpace(string(out))
-		// Check if eject actually happened despite rm errors
-		if strings.Contains(outStr, "ejected") {
+	// Step 2: Clean all macOS junk files
+	for _, name := range []string{".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems"} {
+		os.RemoveAll(filepath.Join(usbPath, name))
+	}
+	for _, name := range []string{".DS_Store", ".VolumeIcon.icns", ".com.apple.timemachine.donotpresent", ".metadata_never_index"} {
+		os.Remove(filepath.Join(usbPath, name))
+	}
+	// Clean ._ and .DS_Store recursively
+	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
 			return nil
 		}
-		return fmt.Errorf("clean & eject failed: %s (%w)", outStr, err)
+		name := info.Name()
+		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
+			os.Remove(path)
+		}
+		return nil
+	})
+
+	// Step 3: IMMEDIATELY eject — no delay
+	cmd := exec.Command("diskutil", "eject", wholeDisk)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("eject failed: %s (%w)", strings.TrimSpace(string(out)), err)
+	}
+
+	outStr := strings.TrimSpace(string(out))
+	if !strings.Contains(outStr, "ejected") {
+		return fmt.Errorf("eject may have failed: %s", outStr)
 	}
 
 	return nil
