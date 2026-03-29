@@ -124,6 +124,20 @@ func (m *ImportModel) runImport() tea.Cmd {
 	}
 }
 
+func (m *ImportModel) refreshBundleList() {
+	items := make([]list.Item, len(m.bundles))
+	for i, b := range m.bundles {
+		projName := extractProjectName(b)
+		desc := "⚠ No mapping — press M to set target"
+		if mapping, ok := m.cfg.Mappings.Lookup(projName); ok {
+			desc = fmt.Sprintf("→ %s/%s", mapping.TargetGroup, mapping.TargetProject)
+		}
+		items[i] = listItem{title: b, desc: desc}
+	}
+	m.bundleList = list.New(items, list.NewDefaultDelegate(), 80, 15)
+	m.bundleList.Title = "Detected Bundles (press M to set mapping, Enter to import)"
+}
+
 func extractProjectName(bundleName string) string {
 	// Format: <project-name>-<timestamp>.mita.zip
 	name := strings.TrimSuffix(bundleName, ".mita.zip")
@@ -163,10 +177,17 @@ func (m *ImportModel) Update(app *App, msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bundles = msg.bundles
 		items := make([]list.Item, len(msg.bundles))
 		for i, b := range msg.bundles {
-			items[i] = listItem{title: b, desc: ""}
+			projName := extractProjectName(b)
+			_, hasMapping := m.cfg.Mappings.Lookup(projName)
+			desc := "⚠ No mapping — press M to set target"
+			if hasMapping {
+				mapping, _ := m.cfg.Mappings.Lookup(projName)
+				desc = fmt.Sprintf("→ %s/%s", mapping.TargetGroup, mapping.TargetProject)
+			}
+			items[i] = listItem{title: b, desc: desc}
 		}
-		m.bundleList = list.New(items, list.NewDefaultDelegate(), 60, 15)
-		m.bundleList.Title = "Detected Bundles"
+		m.bundleList = list.New(items, list.NewDefaultDelegate(), 80, 15)
+		m.bundleList.Title = "Detected Bundles (press M to set mapping, Enter to import)"
 		app.screen = ScreenImportBundleDetect
 		return app, nil
 
@@ -237,8 +258,31 @@ func (m *ImportModel) handleKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return app, cmd
 
 	case ScreenImportBundleDetect:
-		if msg.String() == "enter" {
-			app.screen = ScreenImportConfirm
+		switch msg.String() {
+		case "enter":
+			// Check if all bundles have mappings
+			allMapped := true
+			for _, b := range m.bundles {
+				projName := extractProjectName(b)
+				if _, ok := m.cfg.Mappings.Lookup(projName); !ok {
+					allMapped = false
+					break
+				}
+			}
+			if allMapped {
+				app.screen = ScreenImportConfirm
+			} else {
+				m.err = fmt.Errorf("some bundles have no mapping — press M on each to set target")
+			}
+			return app, nil
+		case "m", "M":
+			// Create mapping for selected bundle
+			if item, ok := m.bundleList.SelectedItem().(listItem); ok {
+				projName := extractProjectName(item.title)
+				m.currentBundle = item.title
+				m.initMappingForm(projName)
+				app.screen = ScreenImportMappingCheck
+			}
 			return app, nil
 		}
 		var cmd tea.Cmd
@@ -294,13 +338,26 @@ func (m *ImportModel) handleMappingInput(app *App, msg tea.KeyMsg) (tea.Model, t
 		if m.mappingFocus == len(m.mappingInputs)-1 {
 			// Save mapping
 			projName := extractProjectName(m.currentBundle)
+			if m.mappingInputs[1].Value() == "" {
+				return app, nil // group is required
+			}
+			targetProj := m.mappingInputs[0].Value()
+			if targetProj == "" {
+				targetProj = projName
+			}
+			branch := m.mappingInputs[2].Value()
+			if branch == "" {
+				branch = "main"
+			}
 			m.cfg.Mappings.Set(projName, config.MappingEntry{
-				TargetProject: m.mappingInputs[0].Value(),
+				TargetProject: targetProj,
 				TargetGroup:   m.mappingInputs[1].Value(),
-				TargetBranch:  m.mappingInputs[2].Value(),
+				TargetBranch:  branch,
 			})
 			m.cfg.Save("")
-			app.screen = ScreenImportConfirm
+			// Refresh bundle list with updated mapping status
+			m.refreshBundleList()
+			app.screen = ScreenImportBundleDetect
 			return app, nil
 		}
 		m.mappingFocus++
@@ -318,18 +375,24 @@ func (m *ImportModel) handleMappingInput(app *App, msg tea.KeyMsg) (tea.Model, t
 	return app, cmd
 }
 
-func (m *ImportModel) initMappingForm(bundleName string) {
-	m.currentBundle = bundleName
+func (m *ImportModel) initMappingForm(projName string) {
 	m.mappingFocus = 0
 
 	inputs := make([]textinput.Model, 3)
 
 	inputs[0] = textinput.New()
 	inputs[0].Placeholder = "Target project name"
+	inputs[0].SetValue(projName) // pre-fill with source project name
 	inputs[0].Focus()
 
 	inputs[1] = textinput.New()
 	inputs[1].Placeholder = "Target group (e.g., group/subgroup)"
+
+	// Pre-fill from existing mapping if available
+	if mapping, ok := m.cfg.Mappings.Lookup(projName); ok {
+		inputs[0].SetValue(mapping.TargetProject)
+		inputs[1].SetValue(mapping.TargetGroup)
+	}
 
 	inputs[2] = textinput.New()
 	inputs[2].Placeholder = "Target branch (default: main)"

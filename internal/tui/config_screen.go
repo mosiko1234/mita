@@ -17,13 +17,16 @@ type ConfigModel struct {
 	inputs     []textinput.Model
 	inputFocus int
 	// subScreen: 0=menu, 1=gitlab urls, 2=source auth mode picker,
-	//            3=source creds form, 4=target creds form, 5=security, 6=mappings
+	//            3=source creds form, 4=target creds form, 5=security, 6=mappings, 7=add/edit mapping
 	subScreen  int
 	mappingIdx int
 	message    string
 
 	// Auth mode picker
 	authModeCursor int // 0=token, 1=basic
+
+	// Mapping edit
+	mappingEditKey string // "" for new, source name for editing
 }
 
 func NewConfigModel(cfg *config.Config) *ConfigModel {
@@ -44,7 +47,7 @@ func (m *ConfigModel) Update(app *App, msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update text inputs if active
-	if (m.subScreen == 1 || m.subScreen == 3 || m.subScreen == 4) && m.inputs != nil && m.inputFocus < len(m.inputs) {
+	if (m.subScreen == 1 || m.subScreen == 3 || m.subScreen == 4 || m.subScreen == 7) && m.inputs != nil && m.inputFocus < len(m.inputs) {
 		var cmd tea.Cmd
 		m.inputs[m.inputFocus], cmd = m.inputs[m.inputFocus].Update(msg)
 		return app, cmd
@@ -58,6 +61,12 @@ func (m *ConfigModel) handleKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return app, tea.Quit
 	case "esc":
+		if m.subScreen == 7 {
+			// Back to mappings list from add/edit form
+			m.subScreen = 6
+			m.message = ""
+			return app, nil
+		}
 		if m.subScreen > 0 {
 			m.subScreen = 0
 			app.screen = ScreenConfig
@@ -89,7 +98,7 @@ func (m *ConfigModel) handleKey(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *ConfigModel) handleConfigMenu(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	menuCount := 6
+	menuCount := 7
 	switch msg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
@@ -118,7 +127,10 @@ func (m *ConfigModel) handleConfigMenu(app *App, msg tea.KeyMsg) (tea.Model, tea
 			m.initTargetCredInputs()
 		case 4: // Security (TLS)
 			m.subScreen = 5
-		case 5: // Back
+		case 5: // Project Mappings
+			m.subScreen = 6
+			app.screen = ScreenConfigMappings
+		case 6: // Back
 			app.screen = ScreenMainMenu
 		}
 	}
@@ -295,11 +307,12 @@ func (m *ConfigModel) handleSecurity(app *App, msg tea.KeyMsg) (tea.Model, tea.C
 }
 
 func (m *ConfigModel) handleMappings(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	mappings := m.cfg.Mappings.List()
-	keys := make([]string, 0, len(mappings))
-	for k := range mappings {
-		keys = append(keys, k)
+	if m.subScreen == 7 {
+		return m.handleAddMappingForm(app, msg)
 	}
+
+	mappings := m.cfg.Mappings.List()
+	keys := sortedKeys(mappings)
 
 	switch msg.String() {
 	case "up", "k":
@@ -310,17 +323,138 @@ func (m *ConfigModel) handleMappings(app *App, msg tea.KeyMsg) (tea.Model, tea.C
 		if m.mappingIdx < len(keys)-1 {
 			m.mappingIdx++
 		}
+	case "a", "n": // Add new mapping
+		m.subScreen = 7
+		m.initAddMappingForm("")
 	case "d":
 		if len(keys) > 0 && m.mappingIdx < len(keys) {
 			m.cfg.Mappings.Delete(keys[m.mappingIdx])
 			m.cfg.Save("")
-			if m.mappingIdx > 0 {
+			m.message = "Mapping deleted"
+			if m.mappingIdx >= len(keys)-1 && m.mappingIdx > 0 {
 				m.mappingIdx--
 			}
+		}
+	case "e", "enter": // Edit selected mapping
+		if len(keys) > 0 && m.mappingIdx < len(keys) {
+			m.subScreen = 7
+			m.initEditMappingForm(keys[m.mappingIdx])
 		}
 	}
 
 	return app, nil
+}
+
+func sortedKeys(m map[string]config.MappingEntry) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func (m *ConfigModel) initAddMappingForm(sourceName string) {
+	m.mappingEditKey = ""
+	m.inputs = make([]textinput.Model, 4)
+
+	m.inputs[0] = textinput.New()
+	m.inputs[0].Placeholder = "Source project name (as exported)"
+	m.inputs[0].SetValue(sourceName)
+	m.inputs[0].Focus()
+
+	m.inputs[1] = textinput.New()
+	m.inputs[1].Placeholder = "Target group (e.g., myteam/sub)"
+
+	m.inputs[2] = textinput.New()
+	m.inputs[2].Placeholder = "Target project name"
+	if sourceName != "" {
+		m.inputs[2].SetValue(sourceName) // default same name
+	}
+
+	m.inputs[3] = textinput.New()
+	m.inputs[3].Placeholder = "Target branch"
+	m.inputs[3].SetValue("main")
+
+	m.inputFocus = 0
+	m.message = ""
+}
+
+func (m *ConfigModel) initEditMappingForm(sourceKey string) {
+	entry, ok := m.cfg.Mappings.Lookup(sourceKey)
+	if !ok {
+		return
+	}
+	m.mappingEditKey = sourceKey
+	m.inputs = make([]textinput.Model, 4)
+
+	m.inputs[0] = textinput.New()
+	m.inputs[0].Placeholder = "Source project name"
+	m.inputs[0].SetValue(sourceKey)
+	m.inputs[0].Focus()
+
+	m.inputs[1] = textinput.New()
+	m.inputs[1].Placeholder = "Target group"
+	m.inputs[1].SetValue(entry.TargetGroup)
+
+	m.inputs[2] = textinput.New()
+	m.inputs[2].Placeholder = "Target project name"
+	m.inputs[2].SetValue(entry.TargetProject)
+
+	m.inputs[3] = textinput.New()
+	m.inputs[3].Placeholder = "Target branch"
+	m.inputs[3].SetValue(entry.TargetBranch)
+
+	m.inputFocus = 0
+	m.message = ""
+}
+
+func (m *ConfigModel) handleAddMappingForm(app *App, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.subScreen = 6
+		m.message = ""
+		return app, nil
+	case "tab", "shift+tab":
+		m.cycleFocus(msg.String() == "shift+tab")
+	case "enter":
+		if m.inputFocus == len(m.inputs)-1 {
+			srcName := m.inputs[0].Value()
+			if srcName == "" {
+				m.message = "Error: Source name is required"
+				return app, nil
+			}
+			if m.inputs[1].Value() == "" {
+				m.message = "Error: Target group is required"
+				return app, nil
+			}
+			targetProj := m.inputs[2].Value()
+			if targetProj == "" {
+				targetProj = srcName
+			}
+			branch := m.inputs[3].Value()
+			if branch == "" {
+				branch = "main"
+			}
+			// If editing, delete old key if name changed
+			if m.mappingEditKey != "" && m.mappingEditKey != srcName {
+				m.cfg.Mappings.Delete(m.mappingEditKey)
+			}
+			m.cfg.Mappings.Set(srcName, config.MappingEntry{
+				TargetProject: targetProj,
+				TargetGroup:   m.inputs[1].Value(),
+				TargetBranch:  branch,
+			})
+			m.cfg.Save("")
+			m.subScreen = 6
+			m.message = fmt.Sprintf("Saved: %s → %s/%s", srcName, m.inputs[1].Value(), targetProj)
+			return app, nil
+		}
+		m.cycleFocus(false)
+	}
+
+	var cmd tea.Cmd
+	m.inputs[m.inputFocus], cmd = m.inputs[m.inputFocus].Update(msg)
+	return app, cmd
 }
 
 func (m *ConfigModel) cycleFocus(backward bool) {
@@ -367,6 +501,8 @@ func (m *ConfigModel) View(app *App) string {
 		return m.viewSecurity()
 	case 6:
 		return m.viewMappings()
+	case 7:
+		return m.viewAddMappingForm()
 	}
 	return ""
 }
@@ -383,12 +519,14 @@ func (m *ConfigModel) viewConfigMenu() string {
 		authLabel = "User+Password"
 	}
 
+	mappingCount := len(m.cfg.Mappings.Entries)
 	items := []string{
 		"GitLab URLs",
 		fmt.Sprintf("Source Auth Mode  [%s]", authLabel),
 		"Source Credentials",
 		"Target Credentials",
 		"Security (TLS)",
+		fmt.Sprintf("Project Mappings  [%d configured]", mappingCount),
 		"Back to Main Menu",
 	}
 
@@ -542,18 +680,18 @@ func (m *ConfigModel) viewMappings() string {
 	title := titleStyle.Render("Configuration - Project Mappings")
 
 	mappings := m.cfg.Mappings.List()
+	msg := m.renderMessage()
+
 	if len(mappings) == 0 {
+		help := helpStyle.Render("A: Add new mapping  |  Esc: Back")
 		return appStyle.Render(boxStyle.Render(
 			title + "\n\n" +
-				mutedStyle.Render("No mappings configured.") + "\n" +
-				mutedStyle.Render("Mappings are created during import when a new project is detected.") + "\n\n" +
-				helpStyle.Render("Esc: Back")))
+				mutedStyle.Render("No mappings configured yet.") + "\n" +
+				mutedStyle.Render("Press A to add a mapping, or create one during import.") + "\n" +
+				msg + "\n\n" + help))
 	}
 
-	keys := make([]string, 0, len(mappings))
-	for k := range mappings {
-		keys = append(keys, k)
-	}
+	keys := sortedKeys(mappings)
 
 	var table strings.Builder
 	table.WriteString(fmt.Sprintf("  %-25s %-25s %-20s %s\n",
@@ -573,9 +711,30 @@ func (m *ConfigModel) viewMappings() string {
 			cursor, key, entry.TargetProject, entry.TargetGroup, entry.TargetBranch))
 	}
 
-	help := helpStyle.Render("Up/Down: Navigate  |  D: Delete  |  Esc: Back")
+	help := helpStyle.Render("A: Add  |  Enter/E: Edit  |  D: Delete  |  Esc: Back")
 
-	return appStyle.Render(boxStyle.Render(title + "\n\n" + table.String() + "\n" + help))
+	return appStyle.Render(boxStyle.Render(title + "\n\n" + table.String() + msg + "\n" + help))
+}
+
+func (m *ConfigModel) viewAddMappingForm() string {
+	action := "Add New"
+	if m.mappingEditKey != "" {
+		action = "Edit"
+	}
+	title := titleStyle.Render(fmt.Sprintf("Project Mapping - %s", action))
+
+	var form strings.Builder
+	labels := []string{"Source project:", "Target group:", "Target project:", "Target branch:"}
+	for i, input := range m.inputs {
+		if i < len(labels) {
+			form.WriteString(labelStyle.Render(labels[i]) + "\n" + input.View() + "\n\n")
+		}
+	}
+
+	msg := m.renderMessage()
+	help := helpStyle.Render("Tab: Next field  |  Enter: Save  |  Esc: Cancel")
+
+	return appStyle.Render(boxStyle.Render(title + "\n\n" + form.String() + msg + "\n" + help))
 }
 
 func (m *ConfigModel) renderMessage() string {
