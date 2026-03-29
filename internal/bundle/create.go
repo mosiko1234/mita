@@ -189,8 +189,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 	return zipPath, nil
 }
 
-// cleanMacOSJunk removes non-protected hidden macOS metadata files from a USB drive.
-// Matches the Python cleanup script: skips .Spotlight-V100, .Trashes, .fseventsd at root.
+// cleanMacOSJunk removes ALL hidden macOS metadata files from a USB drive.
 func cleanMacOSJunk(usbPath string) bool {
 	if runtime.GOOS != "darwin" {
 		return true
@@ -202,96 +201,59 @@ func cleanMacOSJunk(usbPath string) bool {
 
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	protected := map[string]bool{
-		".Spotlight-V100": true,
-		".Trashes":        true,
-		".fseventsd":      true,
-	}
-
 	allHidden := globAllHidden(usbPath)
-	var toRemove []string
-	for _, f := range allHidden {
-		name := filepath.Base(f)
-		parent := filepath.Dir(f)
-		if protected[name] && parent == usbPath {
-			continue
-		}
-		toRemove = append(toRemove, f)
-	}
-
-	if len(toRemove) > 0 {
-		args := append([]string{"-rf"}, toRemove...)
+	if len(allHidden) > 0 {
+		args := append([]string{"-rf"}, allHidden...)
 		exec.Command("rm", args...).Run()
 	}
 
 	return true
 }
 
-// CleanAndEject cleans hidden files from USB and unmounts it.
-// Exact translation of the proven Python cleanup script (clean.py):
-//
-//	mdutil('-i', 'off', dok_path)
-//	hidden_files = list(Path(dok_path).glob('**/.*'))
-//	protected = {'.Spotlight-V100', '.Trashes', '.fseventsd'}
-//	to_remove = [f for f in hidden_files if not (f.name in protected and f.parent == dok_path)]
-//	rm('-rf', to_remove)
-//	diskutil['unmount', dok_path]()
-//
-// Key: .Spotlight-V100, .Trashes, .fseventsd at root are SKIPPED (protected by macOS).
-// Only nested hidden files (._* resource forks etc.) are removed.
+// CleanAndEject removes ALL hidden files from USB and unmounts it.
+// .Spotlight-V100, .Trashes, .fseventsd MUST be deleted — the classified-side
+// Linux scanner blocks USB with these present.
+// Deleting .Spotlight-V100 requires Terminal to have Full Disk Access.
 func CleanAndEject(usbPath string) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("unmount is only supported on macOS")
 	}
 
-	// Step 1: mdutil -i off
+	// Step 1: mdutil -i off — stop Spotlight from writing new files
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Step 2: Collect all hidden files — Path(dok_path).glob('**/.*')
+	// Step 2: Collect ALL hidden files
 	allHidden := globAllHidden(usbPath)
 
-	// Step 3: Filter out protected root-level dirs (matching Python script exactly)
-	protected := map[string]bool{
-		".Spotlight-V100": true,
-		".Trashes":        true,
-		".fseventsd":      true,
+	// Step 3: rm -rf ALL hidden files — single call to /bin/rm
+	if len(allHidden) > 0 {
+		args := append([]string{"-rf"}, allHidden...)
+		exec.Command("rm", args...).Run()
 	}
 
-	var toRemove []string
-	for _, f := range allHidden {
-		name := filepath.Base(f)
-		parent := filepath.Dir(f)
-		if protected[name] && parent == usbPath {
-			// Skip protected root-level entries (same as Python script)
-			continue
+	// Step 4: Verify — if .Spotlight-V100 etc still exist, Terminal lacks Full Disk Access
+	remaining := globAllHidden(usbPath)
+	if len(remaining) > 0 {
+		names := make([]string, len(remaining))
+		for i, f := range remaining {
+			names[i] = filepath.Base(f)
 		}
-		toRemove = append(toRemove, f)
+		// Still unmount, but return error after
+		exec.Command("diskutil", "unmount", usbPath).Run()
+		return fmt.Errorf(
+			"cannot delete: %s\n\n"+
+				"FIX: Open System Settings > Privacy & Security > Full Disk Access\n"+
+				"     and add your Terminal app (Terminal.app / iTerm / Warp etc.)\n"+
+				"     Then try again.",
+			strings.Join(names, ", "),
+		)
 	}
 
-	// Step 4: rm -rf <non-protected hidden files> — single call to /bin/rm
-	if len(toRemove) > 0 {
-		args := append([]string{"-rf"}, toRemove...)
-		cmd := exec.Command("rm", args...)
-		rmOut, rmErr := cmd.CombinedOutput()
-		if rmErr != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: rm -rf partial failure: %s\n", strings.TrimSpace(string(rmOut)))
-			// Try one by one
-			for _, f := range toRemove {
-				exec.Command("rm", "-rf", f).Run()
-			}
-		}
-	}
-
-	// Step 5: diskutil unmount (NOT eject — matching Python script)
+	// Step 5: diskutil unmount
 	cmd := exec.Command("diskutil", "unmount", usbPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("unmount failed: %s (%w)", strings.TrimSpace(string(out)), err)
-	}
-
-	outStr := strings.TrimSpace(string(out))
-	if !strings.Contains(strings.ToLower(outStr), "unmounted") {
-		return fmt.Errorf("unmount may have failed: %s", outStr)
 	}
 
 	return nil
