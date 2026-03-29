@@ -34,6 +34,16 @@ func main() {
 		runImportCLI(os.Args[2:])
 	case "install":
 		forceInstall()
+	case "clean":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: mita clean <usb-path>")
+			os.Exit(1)
+		}
+		if err := bundle.CleanAndEject(os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("USB cleaned and unmounted successfully.")
 	case "version":
 		fmt.Printf("MITA %s (Moses In The Ark)\n", version)
 	case "--version", "-v":

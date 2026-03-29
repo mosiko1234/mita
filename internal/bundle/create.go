@@ -190,7 +190,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 }
 
 // cleanMacOSJunk removes hidden macOS metadata files from a USB drive.
-// Uses the same approach as CleanAndEject but without the unmount step.
+// Uses /bin/rm like the Python script (not Go os.RemoveAll).
 func cleanMacOSJunk(usbPath string) bool {
 	if runtime.GOOS != "darwin" {
 		return true
@@ -201,29 +201,46 @@ func cleanMacOSJunk(usbPath string) bool {
 	}
 
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
-	removeAllHidden(usbPath)
+
+	hiddenFiles := globAllHidden(usbPath)
+	if len(hiddenFiles) > 0 {
+		args := append([]string{"-rf"}, hiddenFiles...)
+		exec.Command("rm", args...).Run()
+	}
 
 	return true
 }
 
 // CleanAndEject removes ALL hidden files from the USB then unmounts it.
-// Uses the same approach as the proven Python cleanup script:
-// 1. mdutil -i off (disable Spotlight indexing)
-// 2. rm -rf all hidden files (glob **/.*)
-// 3. diskutil unmount (NOT eject — unmount prevents macOS from recreating files)
-// After unmount the user can safely remove the USB.
+// This is a direct Go translation of the proven Python cleanup script:
+//
+//	mdutil('-i', 'off', dok_path)
+//	hidden_files = list(Path(dok_path).glob('**/.*'))
+//	rm('-rf', hidden_files)
+//	diskutil['unmount', dok_path]()
+//
+// Key design decisions matching the Python script:
+// - Use /bin/rm (not Go os.RemoveAll) — handles macOS permissions differently
+// - Collect ALL hidden paths first, then delete in ONE rm call
+// - diskutil unmount (not eject) prevents macOS from recreating files
 func CleanAndEject(usbPath string) error {
 	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("eject is only supported on macOS")
+		return fmt.Errorf("unmount is only supported on macOS")
 	}
 
-	// Step 1: Disable Spotlight indexing on this volume
+	// Step 1: mdutil -i off — exact match to Python script
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Step 2: Find and remove ALL hidden files/dirs recursively (anything starting with ".")
-	removeAllHidden(usbPath)
+	// Step 2: Collect all hidden files — equivalent to Path(dok_path).glob('**/.*')
+	hiddenFiles := globAllHidden(usbPath)
 
-	// Step 3: Unmount (not eject!) — this prevents macOS from recreating hidden files
+	// Step 3: rm -rf <all hidden files> — ONE call to /bin/rm, not Go os.RemoveAll
+	if len(hiddenFiles) > 0 {
+		args := append([]string{"-rf"}, hiddenFiles...)
+		exec.Command("rm", args...).Run()
+	}
+
+	// Step 4: diskutil unmount — exact match to Python script
 	cmd := exec.Command("diskutil", "unmount", usbPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -238,22 +255,11 @@ func CleanAndEject(usbPath string) error {
 	return nil
 }
 
-// removeAllHidden removes all files and directories starting with "." from the USB path.
-// This matches the Python script's glob('**/.*') approach.
-func removeAllHidden(usbPath string) {
-	// First pass: collect all hidden entries at root level
-	entries, err := os.ReadDir(usbPath)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".") {
-			target := filepath.Join(usbPath, entry.Name())
-			os.RemoveAll(target)
-		}
-	}
+// globAllHidden collects all paths starting with "." under usbPath.
+// Equivalent to Python's Path(dok_path).glob('**/.*')
+func globAllHidden(usbPath string) []string {
+	var hidden []string
 
-	// Second pass: walk recursively for any nested hidden files
 	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -262,14 +268,15 @@ func removeAllHidden(usbPath string) {
 			return nil
 		}
 		if strings.HasPrefix(info.Name(), ".") {
+			hidden = append(hidden, path)
 			if info.IsDir() {
-				os.RemoveAll(path)
-				return filepath.SkipDir
+				return filepath.SkipDir // don't recurse into hidden dirs, rm -rf handles it
 			}
-			os.Remove(path)
 		}
 		return nil
 	})
+
+	return hidden
 }
 
 // findDeviceForMount finds the disk identifier (e.g. "disk2s2") for a mount point.
