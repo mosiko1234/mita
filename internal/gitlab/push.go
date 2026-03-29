@@ -16,6 +16,7 @@ type PushOptions struct {
 // PushAll pushes all branches and tags to the remote.
 func PushAll(opts PushOptions) error {
 	env := os.Environ()
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
 	if opts.InsecureTLS {
 		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
@@ -24,27 +25,24 @@ func PushAll(opts PushOptions) error {
 	cmd := exec.Command("git", "remote", "add", "target", opts.RemoteURL)
 	cmd.Dir = opts.RepoDir
 	cmd.Env = env
-	// Ignore error if remote already exists
-	cmd.Run()
+	cmd.Run() // ignore error if remote already exists
 
 	// Push all branches
 	cmd = exec.Command("git", "push", "target", "--all")
 	cmd.Dir = opts.RepoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Env = env
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git push --all: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git push --all: %w\n%s", err, string(out))
 	}
 
 	// Push all tags
 	cmd = exec.Command("git", "push", "target", "--tags")
 	cmd.Dir = opts.RepoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Env = env
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git push --tags: %w", err)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git push --tags: %w\n%s", err, string(out))
 	}
 
 	return nil
