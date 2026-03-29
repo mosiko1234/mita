@@ -190,16 +190,7 @@ func Create(client *gitlab.Client, projectName, branch string, shallow bool, usb
 }
 
 // cleanMacOSJunk removes hidden macOS metadata files from a USB drive.
-//
-// On macOS, .Spotlight-V100 is protected by SIP (SF_RESTRICTED flag) and CANNOT
-// be deleted by any user-space process — not even root. This is a kernel-level
-// restriction. The directory is created immediately on mount by diskarbitrationd.
-//
-// What we CAN clean: .fseventsd, .Trashes, .DS_Store, ._ resource forks,
-// .TemporaryItems, .VolumeIcon.icns — these are all deletable.
-//
-// .Spotlight-V100 on a freshly formatted drive is an empty directory and should
-// not cause issues with classified-side scanners.
+// Uses the same approach as CleanAndEject but without the unmount step.
 func cleanMacOSJunk(usbPath string) bool {
 	if runtime.GOOS != "darwin" {
 		return true
@@ -209,125 +200,76 @@ func cleanMacOSJunk(usbPath string) bool {
 		return false
 	}
 
-	// Disable Spotlight indexing on this volume to prevent index files
-	exec.Command("mdutil", "-d", usbPath).Run()
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
-
-	// Merge ._ resource fork files into their parent files
-	exec.Command("dot_clean", "-m", usbPath).Run()
-
-	// Remove deletable directories
-	for _, name := range []string{".fseventsd", ".Trashes", ".TemporaryItems"} {
-		os.RemoveAll(filepath.Join(usbPath, name))
-	}
-
-	// Remove deletable files
-	for _, name := range []string{".DS_Store", ".VolumeIcon.icns", ".com.apple.timemachine.donotpresent", ".metadata_never_index"} {
-		os.Remove(filepath.Join(usbPath, name))
-	}
-
-	// Recursively remove .DS_Store and ._ resource fork files
-	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		name := info.Name()
-		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
-			os.Remove(path)
-		}
-		return nil
-	})
-
-	// Try to remove .Spotlight-V100 — requires Full Disk Access for Terminal.
-	// First try normal rm, then try via osascript with admin privileges.
-	spotlightPath := filepath.Join(usbPath, ".Spotlight-V100")
-	if _, err := os.Stat(spotlightPath); err == nil {
-		// Try 1: direct removal (works if Terminal has Full Disk Access)
-		if os.RemoveAll(spotlightPath) != nil {
-			// Try 2: sudo rm via osascript (shows password prompt)
-			script := fmt.Sprintf(
-				`do shell script "rm -rf %q && rm -rf %q" with administrator privileges`,
-				spotlightPath,
-				filepath.Join(usbPath, ".Trashes"),
-			)
-			exec.Command("osascript", "-e", script).Run()
-		}
-	}
-
-	// Final pass: clean any ._ resource forks and .fseventsd that may have been
-	// recreated by macOS after the Spotlight deletion above
-	for _, name := range []string{".fseventsd", ".Trashes", ".TemporaryItems"} {
-		os.RemoveAll(filepath.Join(usbPath, name))
-	}
-	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		name := info.Name()
-		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
-			os.Remove(path)
-		}
-		return nil
-	})
+	removeAllHidden(usbPath)
 
 	return true
 }
 
-// CleanAndEject performs a thorough cleanup of macOS hidden files then ejects the USB.
-// The cleanup and eject happen as fast as possible so macOS can't recreate files.
+// CleanAndEject removes ALL hidden files from the USB then unmounts it.
+// Uses the same approach as the proven Python cleanup script:
+// 1. mdutil -i off (disable Spotlight indexing)
+// 2. rm -rf all hidden files (glob **/.*)
+// 3. diskutil unmount (NOT eject — unmount prevents macOS from recreating files)
+// After unmount the user can safely remove the USB.
 func CleanAndEject(usbPath string) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("eject is only supported on macOS")
 	}
 
-	// Find device before we start (need it for eject)
-	devID := findDeviceForMount(usbPath)
-	if devID == "" {
-		return fmt.Errorf("cannot find device for %s", usbPath)
-	}
-
-	// Find the whole disk (e.g. "disk2" from "disk2s2") for ejecting
-	wholeDisk := devID
-	if idx := strings.LastIndex(devID, "s"); idx > 4 {
-		wholeDisk = devID[:idx]
-	}
-
-	// Step 1: Disable Spotlight BEFORE cleanup to reduce re-creation
-	exec.Command("mdutil", "-d", usbPath).Run()
+	// Step 1: Disable Spotlight indexing on this volume
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Step 2: Clean all macOS junk files
-	for _, name := range []string{".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems"} {
-		os.RemoveAll(filepath.Join(usbPath, name))
+	// Step 2: Find and remove ALL hidden files/dirs recursively (anything starting with ".")
+	removeAllHidden(usbPath)
+
+	// Step 3: Unmount (not eject!) — this prevents macOS from recreating hidden files
+	cmd := exec.Command("diskutil", "unmount", usbPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("unmount failed: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
-	for _, name := range []string{".DS_Store", ".VolumeIcon.icns", ".com.apple.timemachine.donotpresent", ".metadata_never_index"} {
-		os.Remove(filepath.Join(usbPath, name))
+
+	outStr := strings.TrimSpace(string(out))
+	if !strings.Contains(strings.ToLower(outStr), "unmounted") {
+		return fmt.Errorf("unmount may have failed: %s", outStr)
 	}
-	// Clean ._ and .DS_Store recursively
+
+	return nil
+}
+
+// removeAllHidden removes all files and directories starting with "." from the USB path.
+// This matches the Python script's glob('**/.*') approach.
+func removeAllHidden(usbPath string) {
+	// First pass: collect all hidden entries at root level
+	entries, err := os.ReadDir(usbPath)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			target := filepath.Join(usbPath, entry.Name())
+			os.RemoveAll(target)
+		}
+	}
+
+	// Second pass: walk recursively for any nested hidden files
 	filepath.Walk(usbPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
-		name := info.Name()
-		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
+		if path == usbPath {
+			return nil
+		}
+		if strings.HasPrefix(info.Name(), ".") {
+			if info.IsDir() {
+				os.RemoveAll(path)
+				return filepath.SkipDir
+			}
 			os.Remove(path)
 		}
 		return nil
 	})
-
-	// Step 3: IMMEDIATELY eject — no delay
-	cmd := exec.Command("diskutil", "eject", wholeDisk)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("eject failed: %s (%w)", strings.TrimSpace(string(out)), err)
-	}
-
-	outStr := strings.TrimSpace(string(out))
-	if !strings.Contains(outStr, "ejected") {
-		return fmt.Errorf("eject may have failed: %s", outStr)
-	}
-
-	return nil
 }
 
 // findDeviceForMount finds the disk identifier (e.g. "disk2s2") for a mount point.

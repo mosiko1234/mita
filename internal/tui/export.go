@@ -527,12 +527,12 @@ func (m *ExportModel) viewSummary() string {
 	if m.loading {
 		return appStyle.Render(boxStyle.Render(
 			title + "\n\n" + status + "\n" + details.String() + "\n\n" +
-				m.spinner.View() + " Cleaning and ejecting USB..."))
+				m.spinner.View() + " Cleaning hidden files and unmounting USB..."))
 	}
 
 	// After eject attempt
 	if m.ejected {
-		ejectStatus := "\n" + successStyle.Render("✓ USB cleaned and ejected safely. You can remove it now.") + "\n"
+		ejectStatus := "\n" + successStyle.Render("✓ USB cleaned and unmounted. You can safely remove it now.") + "\n"
 
 		var menu string
 		items := []string{"Export another project", "Back to main menu"}
@@ -552,7 +552,7 @@ func (m *ExportModel) viewSummary() string {
 
 	// Eject failed — show error
 	if m.err != nil && !m.ejected {
-		ejectErr := "\n" + errorStyle.Render("Eject failed: "+m.err.Error()) + "\n"
+		ejectErr := "\n" + errorStyle.Render("Unmount failed:"+m.err.Error()) + "\n"
 		help := helpStyle.Render("Press Esc to return to main menu")
 		return appStyle.Render(boxStyle.Render(title + "\n\n" + status + "\n" + details.String() + ejectErr + "\n" + help))
 	}
@@ -561,7 +561,7 @@ func (m *ExportModel) viewSummary() string {
 	var menu string
 	items := []string{
 		"Export another project to same USB",
-		"Clean & Eject USB (remove macOS hidden files)",
+		"Clean & Unmount USB (remove macOS hidden files)",
 		"Back to main menu",
 	}
 	for i, item := range items {
