@@ -258,19 +258,44 @@ func runExportCLI(args []string) {
 func runImportCLI(args []string) {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
 	usbPath := fs.String("usb", "", "USB drive path")
+	targetGroup := fs.String("group", "", "Target GitLab group (e.g., mygroup or mygroup/subgroup)")
+	targetProject := fs.String("project", "", "Target project name in GitLab")
+	targetBranch := fs.String("branch", "main", "Target branch")
+	gitlabURL := fs.String("gitlab-url", "", "Target GitLab URL (overrides config)")
+	user := fs.String("user", "", "Target GitLab username")
+	pass := fs.String("pass", "", "Target GitLab password")
 	auto := fs.Bool("auto", false, "Auto-import using existing mappings")
 
 	fs.Parse(args)
 
 	if *usbPath == "" {
-		fmt.Fprintln(os.Stderr, "Usage: mita import --usb <path> [--auto]")
+		fmt.Fprintln(os.Stderr, "Usage: mita import --usb <path> --group <group> --project <name> [--gitlab-url <url>] [--user <user>] [--pass <pass>]")
+		fmt.Fprintln(os.Stderr, "\nExamples:")
+		fmt.Fprintln(os.Stderr, "  mita import --usb /Volumes/USB --group myteam --project observability")
+		fmt.Fprintln(os.Stderr, "  mita import --usb /Volumes/USB --auto   (uses saved mappings)")
+		fmt.Fprintln(os.Stderr, "")
 		fs.PrintDefaults()
 		os.Exit(1)
 	}
 
 	cfg, err := config.Load("")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		cfg = config.DefaultConfig()
+	}
+
+	// Override config with CLI flags
+	if *gitlabURL != "" {
+		cfg.TargetGitLabURL = *gitlabURL
+	}
+	if *user != "" {
+		cfg.TargetUsername = *user
+	}
+	if *pass != "" {
+		cfg.TargetPassword = *pass
+	}
+
+	if cfg.TargetGitLabURL == "" {
+		fmt.Fprintln(os.Stderr, "Error: Target GitLab URL not set. Use --gitlab-url or configure via 'mita' TUI.")
 		os.Exit(1)
 	}
 
@@ -290,17 +315,67 @@ func runImportCLI(args []string) {
 	for _, b := range bundles {
 		fmt.Printf("\nImporting: %s\n", b)
 
+		// Try to find mapping: CLI flags > saved mapping > interactive prompt
 		mapping, ok := cfg.Mappings.Lookup(b)
-		if !ok && !*auto {
-			fmt.Fprintf(os.Stderr, "No mapping found for %s. Use TUI mode to create a mapping.\n", b)
-			continue
+
+		if !ok && *targetGroup != "" && *targetProject != "" {
+			// Use CLI flags as mapping
+			mapping = config.MappingEntry{
+				TargetProject: *targetProject,
+				TargetGroup:   *targetGroup,
+				TargetBranch:  *targetBranch,
+			}
+			// Save mapping for future use
+			cfg.Mappings.Set(b, mapping)
+			cfg.Save("")
+			ok = true
 		}
+
+		if !ok && !*auto {
+			// Interactive prompt
+			fmt.Printf("No mapping found for %q.\n", b)
+			fmt.Printf("  Target group (e.g., myteam or myteam/sub): ")
+			var group string
+			fmt.Scanln(&group)
+			if group == "" {
+				fmt.Fprintln(os.Stderr, "Skipping (no group provided)")
+				continue
+			}
+			fmt.Printf("  Target project name [%s]: ", b)
+			var proj string
+			fmt.Scanln(&proj)
+			if proj == "" {
+				// Default to bundle name (extract project name from bundle filename)
+				proj = b
+			}
+			fmt.Printf("  Target branch [main]: ")
+			var br string
+			fmt.Scanln(&br)
+			if br == "" {
+				br = "main"
+			}
+
+			mapping = config.MappingEntry{
+				TargetProject: proj,
+				TargetGroup:   group,
+				TargetBranch:  br,
+			}
+			// Save mapping for future use
+			cfg.Mappings.Set(b, mapping)
+			cfg.Save("")
+			ok = true
+		}
+
 		if !ok {
-			fmt.Fprintf(os.Stderr, "No mapping found for %s, skipping (auto mode)\n", b)
+			fmt.Fprintf(os.Stderr, "No mapping found for %s, skipping\n", b)
 			continue
 		}
 
-		targetClient, err := gitlab.NewClient(cfg.TargetGitLabURL, "", cfg.InsecureTLS)
+		fmt.Printf("Target: %s/%s (branch: %s)\n", mapping.TargetGroup, mapping.TargetProject, mapping.TargetBranch)
+
+		targetClient, err := gitlab.NewClientWithBasicAuth(
+			cfg.TargetGitLabURL, cfg.TargetUsername, cfg.TargetPassword, cfg.InsecureTLS,
+		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating target GitLab client: %v\n", err)
 			continue
