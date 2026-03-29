@@ -235,10 +235,25 @@ func CleanAndEject(usbPath string) error {
 	// Step 3: rm -rf <all hidden files> — single call to /bin/rm
 	if len(hiddenFiles) > 0 {
 		args := append([]string{"-rf"}, hiddenFiles...)
-		exec.Command("rm", args...).Run()
+		cmd := exec.Command("rm", args...)
+		rmOut, rmErr := cmd.CombinedOutput()
+		if rmErr != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: rm -rf failed: %s (%v)\n", strings.TrimSpace(string(rmOut)), rmErr)
+			fmt.Fprintln(os.Stderr, "TIP: Grant Full Disk Access to Terminal in System Settings > Privacy & Security > Full Disk Access")
+		}
 	}
 
-	// Step 4: diskutil unmount (NOT eject)
+	// Step 4: Verify cleanup — check what's left
+	remaining := globAllHidden(usbPath)
+	if len(remaining) > 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: %d hidden files could not be removed:\n", len(remaining))
+		for _, f := range remaining {
+			fmt.Fprintf(os.Stderr, "  - %s\n", f)
+		}
+		fmt.Fprintln(os.Stderr, "TIP: Grant Full Disk Access to Terminal in System Settings > Privacy & Security > Full Disk Access")
+	}
+
+	// Step 5: diskutil unmount (NOT eject)
 	cmd := exec.Command("diskutil", "unmount", usbPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -248,6 +263,10 @@ func CleanAndEject(usbPath string) error {
 	outStr := strings.TrimSpace(string(out))
 	if !strings.Contains(strings.ToLower(outStr), "unmounted") {
 		return fmt.Errorf("unmount may have failed: %s", outStr)
+	}
+
+	if len(remaining) > 0 {
+		return fmt.Errorf("%d hidden files could not be removed (Terminal needs Full Disk Access)", len(remaining))
 	}
 
 	return nil
