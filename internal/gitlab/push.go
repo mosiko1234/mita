@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 )
@@ -70,11 +71,16 @@ func PushLFS(repoDir, remoteURL string, insecureTLS bool) error {
 }
 
 // BuildRemoteURL constructs a GitLab HTTP URL with embedded credentials.
+// Credentials are URL-encoded to handle special characters (@, :, /, etc.)
 func BuildRemoteURL(baseURL, group, project, username, password string) string {
 	// Remove protocol prefix
+	scheme := "https"
 	host := baseURL
 	for _, prefix := range []string{"https://", "http://"} {
 		if len(host) > len(prefix) && host[:len(prefix)] == prefix {
+			if prefix == "http://" {
+				scheme = "http"
+			}
 			host = host[len(prefix):]
 			break
 		}
@@ -86,21 +92,28 @@ func BuildRemoteURL(baseURL, group, project, username, password string) string {
 
 	path := group + "/" + project + ".git"
 	if username != "" && password != "" {
-		return fmt.Sprintf("https://%s:%s@%s/%s", username, password, host, path)
+		return fmt.Sprintf("%s://%s:%s@%s/%s",
+			scheme,
+			url.PathEscape(username),
+			url.PathEscape(password),
+			host, path)
 	}
-	return fmt.Sprintf("https://%s/%s", host, path)
+	return fmt.Sprintf("%s://%s/%s", scheme, host, path)
 }
 
 // EmbedCredentialsInURL takes a GitLab HTTP URL and injects username:password.
-// e.g., https://gitlab.local/group/repo.git -> https://user:pass@gitlab.local/group/repo.git
+// Credentials are URL-encoded to handle special characters.
 func EmbedCredentialsInURL(rawURL, username, password string) string {
 	if username == "" || password == "" {
 		return rawURL
 	}
 
+	encodedUser := url.PathEscape(username)
+	encodedPass := url.PathEscape(password)
+
 	for _, prefix := range []string{"https://", "http://"} {
 		if len(rawURL) > len(prefix) && rawURL[:len(prefix)] == prefix {
-			return prefix + username + ":" + password + "@" + rawURL[len(prefix):]
+			return prefix + encodedUser + ":" + encodedPass + "@" + rawURL[len(prefix):]
 		}
 	}
 
