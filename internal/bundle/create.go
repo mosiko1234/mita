@@ -212,48 +212,33 @@ func cleanMacOSJunk(usbPath string) bool {
 }
 
 // CleanAndEject removes ALL hidden files from the USB then unmounts it.
-// This is a direct Go translation of the proven Python cleanup script:
+// This is a direct Go translation of the proven Python cleanup script (clean.py):
 //
 //	mdutil('-i', 'off', dok_path)
 //	hidden_files = list(Path(dok_path).glob('**/.*'))
 //	rm('-rf', hidden_files)
 //	diskutil['unmount', dok_path]()
 //
-// Key design decisions matching the Python script:
-// - Use /bin/rm (not Go os.RemoveAll) — handles macOS permissions differently
-// - Collect ALL hidden paths first, then delete in ONE rm call
-// - diskutil unmount (not eject) prevents macOS from recreating files
+// IMPORTANT: Only unmount, do NOT eject. The Python script does unmount only,
+// and eject causes "unable to mount device" on the classified-side machine.
 func CleanAndEject(usbPath string) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("unmount is only supported on macOS")
 	}
 
-	// Step 1: mdutil -i off — exact match to Python script
+	// Step 1: mdutil -i off
 	exec.Command("mdutil", "-i", "off", usbPath).Run()
 
-	// Step 2: Collect all hidden files — equivalent to Path(dok_path).glob('**/.*')
+	// Step 2: Collect all hidden files — Path(dok_path).glob('**/.*')
 	hiddenFiles := globAllHidden(usbPath)
 
-	// Step 3: rm -rf <all hidden files> — ONE call to /bin/rm, not Go os.RemoveAll
+	// Step 3: rm -rf <all hidden files> — single call to /bin/rm
 	if len(hiddenFiles) > 0 {
 		args := append([]string{"-rf"}, hiddenFiles...)
 		exec.Command("rm", args...).Run()
 	}
 
-	// Step 4: Find the device ID BEFORE unmounting (mount table won't have it after)
-	devID := findDeviceForMount(usbPath)
-	wholeDisk := ""
-	if devID != "" {
-		wholeDisk = devID
-		if idx := strings.LastIndex(devID, "s"); idx > 4 {
-			wholeDisk = devID[:idx]
-		}
-	} else {
-		// Fallback: find from diskutil list
-		wholeDisk = findWholeDeviceByVolume(usbPath)
-	}
-
-	// Step 5: diskutil unmount — flushes writes and detaches the volume
+	// Step 4: diskutil unmount (NOT eject)
 	cmd := exec.Command("diskutil", "unmount", usbPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -265,40 +250,7 @@ func CleanAndEject(usbPath string) error {
 		return fmt.Errorf("unmount may have failed: %s", outStr)
 	}
 
-	// Step 6: diskutil eject — fully detach the disk so it's safe to remove.
-	// Without eject, the disk stays attached and can cause "unable to mount device"
-	// on the classified-side machine.
-	if wholeDisk != "" {
-		exec.Command("diskutil", "eject", wholeDisk).Run()
-	}
-
 	return nil
-}
-
-// findWholeDeviceByVolume finds the whole disk device for a volume that was just unmounted.
-// Uses diskutil list to scan for the volume name.
-func findWholeDeviceByVolume(volumePath string) string {
-	// Extract volume name from path (e.g., "/Volumes/Transcend" -> "Transcend")
-	volumeName := filepath.Base(volumePath)
-
-	out, err := exec.Command("diskutil", "list", "external").Output()
-	if err != nil {
-		return ""
-	}
-
-	// Find the disk line containing our volume name
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, volumeName) {
-			fields := strings.Fields(line)
-			if len(fields) > 0 {
-				lastField := fields[len(fields)-1]
-				if strings.HasPrefix(lastField, "disk") {
-					return lastField
-				}
-			}
-		}
-	}
-	return ""
 }
 
 // globAllHidden collects all paths starting with "." under usbPath.
