@@ -532,7 +532,7 @@ func (m *ExportModel) viewSummary() string {
 
 	// After eject attempt
 	if m.ejected {
-		ejectStatus := "\n" + successStyle.Render("✓ USB cleaned and unmounted. You can safely remove it now.") + "\n"
+		ejectStatus := "\n" + successStyle.Render("✓ USB cleaned, unmounted, and ejected. You can safely remove it now.") + "\n"
 
 		var menu string
 		items := []string{"Export another project", "Back to main menu"}

@@ -240,7 +240,20 @@ func CleanAndEject(usbPath string) error {
 		exec.Command("rm", args...).Run()
 	}
 
-	// Step 4: diskutil unmount — exact match to Python script
+	// Step 4: Find the device ID BEFORE unmounting (mount table won't have it after)
+	devID := findDeviceForMount(usbPath)
+	wholeDisk := ""
+	if devID != "" {
+		wholeDisk = devID
+		if idx := strings.LastIndex(devID, "s"); idx > 4 {
+			wholeDisk = devID[:idx]
+		}
+	} else {
+		// Fallback: find from diskutil list
+		wholeDisk = findWholeDeviceByVolume(usbPath)
+	}
+
+	// Step 5: diskutil unmount — flushes writes and detaches the volume
 	cmd := exec.Command("diskutil", "unmount", usbPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -252,7 +265,40 @@ func CleanAndEject(usbPath string) error {
 		return fmt.Errorf("unmount may have failed: %s", outStr)
 	}
 
+	// Step 6: diskutil eject — fully detach the disk so it's safe to remove.
+	// Without eject, the disk stays attached and can cause "unable to mount device"
+	// on the classified-side machine.
+	if wholeDisk != "" {
+		exec.Command("diskutil", "eject", wholeDisk).Run()
+	}
+
 	return nil
+}
+
+// findWholeDeviceByVolume finds the whole disk device for a volume that was just unmounted.
+// Uses diskutil list to scan for the volume name.
+func findWholeDeviceByVolume(volumePath string) string {
+	// Extract volume name from path (e.g., "/Volumes/Transcend" -> "Transcend")
+	volumeName := filepath.Base(volumePath)
+
+	out, err := exec.Command("diskutil", "list", "external").Output()
+	if err != nil {
+		return ""
+	}
+
+	// Find the disk line containing our volume name
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, volumeName) {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				lastField := fields[len(fields)-1]
+				if strings.HasPrefix(lastField, "disk") {
+					return lastField
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // globAllHidden collects all paths starting with "." under usbPath.
